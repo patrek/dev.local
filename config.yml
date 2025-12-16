@@ -6,6 +6,28 @@ namespace: devlocal
 dozzle_enabled: true
 dozzle_port: 9999  # Port accessible via http://localhost:9999 ou http://localhost:8080/logs
 
+# HTTPS / TLS Configuration
+# Activer HTTPS pour les services via Traefik
+https:
+  # Activer HTTPS globalement (nécessite des certificats générés)
+  enabled: false
+
+  # Domaine de base pour les certificats wildcard (ex: *.dev.local)
+  domain: dev.local
+
+  # Rediriger automatiquement HTTP vers HTTPS
+  # Si true, toutes les requêtes HTTP seront redirigées vers HTTPS
+  redirect_http_to_https: false
+
+  # Emplacement des certificats (relatif au conteneur Traefik)
+  cert_file: /etc/traefik/certs/cert.pem
+  key_file: /etc/traefik/certs/key.pem
+
+  # Configuration des entrypoints
+  entrypoints:
+    http_port: 8080      # Port HTTP (web)
+    https_port: 8443    # Port HTTPS (websecure)
+
 # Docker Registries
 # Configuration des registres Docker pour le projet
 registries:

@@ -13,6 +13,23 @@ providers:
 entryPoints:
   web:
     address: ":80"
+    # Décommenter pour rediriger automatiquement HTTP vers HTTPS
+    # http:
+    #   redirections:
+    #     entryPoint:
+    #       to: websecure
+    #       scheme: https
+
+  websecure:
+    address: ":443"
+    http:
+      tls: {}
+
+# Configuration TLS
+tls:
+  certificates:
+    - certFile: /etc/traefik/certs/cert.pem
+      keyFile: /etc/traefik/certs/key.pem
 
 ping: {}
 

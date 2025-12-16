@@ -16,6 +16,9 @@ CONFIG_FILE="config.yml"
 DOZZLE_ENABLED=true
 DOZZLE_PORT=9999
 NAMESPACE="default"
+HTTPS_ENABLED=false
+HTTPS_DOMAIN="dev.local"
+HTTPS_REDIRECT=false
 
 # Détection robuste de yq (mikefarah v4+)
 YQ_CMD=""
@@ -57,6 +60,9 @@ load_config() {
             DOZZLE_ENABLED=$(yq e '.dozzle_enabled // true' "$CONFIG_FILE" 2>/dev/null)
             DOZZLE_PORT=$(yq e '.dozzle_port // 9999' "$CONFIG_FILE" 2>/dev/null)
             NAMESPACE=$(yq e '.namespace // "devlocal"' "$CONFIG_FILE" 2>/dev/null)
+            HTTPS_ENABLED=$(yq e '.https.enabled // false' "$CONFIG_FILE" 2>/dev/null)
+            HTTPS_DOMAIN=$(yq e '.https.domain // "dev.local"' "$CONFIG_FILE" 2>/dev/null)
+            HTTPS_REDIRECT=$(yq e '.https.redirect_http_to_https // false' "$CONFIG_FILE" 2>/dev/null)
         else
             if grep -q "dozzle_enabled: false" "$CONFIG_FILE" 2>/dev/null; then
                 DOZZLE_ENABLED=false
@@ -76,6 +82,19 @@ load_config() {
                 if [ -z "$NAMESPACE" ]; then
                     NAMESPACE="devlocal"
                 fi
+            fi
+
+            # Parser la configuration HTTPS (fallback grep/sed)
+            if grep -A 20 "^https:" "$CONFIG_FILE" | grep -q "enabled: true" 2>/dev/null; then
+                HTTPS_ENABLED=true
+            fi
+            local https_domain
+            https_domain=$(grep -A 20 "^https:" "$CONFIG_FILE" | grep "domain:" | head -1 | sed 's/.*domain: *//' | sed 's/ *#.*//' | tr -d '\r' || echo "dev.local")
+            if [ -n "$https_domain" ]; then
+                HTTPS_DOMAIN=$https_domain
+            fi
+            if grep -A 20 "^https:" "$CONFIG_FILE" | grep -q "redirect_http_to_https: true" 2>/dev/null; then
+                HTTPS_REDIRECT=true
             fi
         fi
     fi
@@ -434,10 +453,30 @@ generate_docker_compose() {
     fi
 
     load_config
-    
+
     # Header avec timestamp
     local timestamp
     timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+
+    # Préparer les ports Traefik
+    local traefik_ports='      - "8080:80"
+      - "8081:8080"'
+
+    # Ajouter le port HTTPS si activé
+    if [ "$HTTPS_ENABLED" = "true" ]; then
+        traefik_ports="$traefik_ports"$'\n'"      - \"8443:443\""
+    fi
+
+    # Préparer les volumes Traefik
+    local traefik_volumes='      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro'
+
+    # Ajouter le volume des certificats si HTTPS activé
+    if [ "$HTTPS_ENABLED" = "true" ]; then
+        traefik_volumes="$traefik_volumes"$'\n'"      - ./traefik/certs:/etc/traefik/certs:ro"
+    fi
+
     cat > "$DOCKER_COMPOSE_FILE" << EOF
 # Généré automatiquement par manage-profiles.sh
 # NE PAS ÉDITER MANUELLEMENT - Vos modifications seront écrasées
@@ -450,14 +489,11 @@ services:
     image: traefik:v3.6.4
     container_name: ${COMPOSE_PROJECT_NAME:-devlocal}_traefik
     ports:
-      - "8080:80"
-      - "8081:8080"
+$traefik_ports
     extra_hosts:
       - "external-ip:host-gateway"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
-      - ./traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro
+$traefik_volumes
     networks:
       - traefik-network
     healthcheck:
@@ -703,8 +739,15 @@ generate_traefik_dynamic() {
         fi
 
         # --- Router ---
+        # Déterminer les entrypoints selon la configuration HTTPS
+        local entrypoints=""
+        if [ "$HTTPS_ENABLED" = "true" ]; then
+            # HTTPS activé: utiliser les deux entrypoints
+            entrypoints=$'\n'"      entryPoints:"$'\n'"        - web"$'\n'"        - websecure"
+        fi
+
         # Utilisation de backticks escaped pour la règle PathPrefix
-        routers="${routers}"$'\n'"    ${name}:"$'\n'"      rule: \"PathPrefix(\`$prefix\`)\""$'\n'"      service: ${name}"$'\n'"      priority: $priority${middleware_ref}"
+        routers="${routers}"$'\n'"    ${name}:"$'\n'"      rule: \"PathPrefix(\`$prefix\`)\""$'\n'"      service: ${name}"$'\n'"      priority: $priority${entrypoints}${middleware_ref}"
 
         # --- Service ---
         services="${services}"$'\n'"    ${name}:"$'\n'"      failover:"$'\n'"        service: ${name}-host"$'\n'"        fallback: ${name}-docker"
