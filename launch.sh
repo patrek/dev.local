@@ -4,18 +4,18 @@
 
 # Note: set -e retiré car il empêche la gestion gracieuse des erreurs de SOPS
 
-COMMAND="${1:-start}"
+COMMAND="start"
 PROFILES=""
 SERVICE=""
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --profile)
+        -p|--profile)
             PROFILES="$2"
             shift 2
             ;;
-        --service)
+        -s|--service)
             SERVICE="$2"
             shift 2
             ;;
