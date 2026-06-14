@@ -49,6 +49,133 @@ else
     echo -e "\033[93m  Installez yq v4+ pour un parsing plus fiable: https://github.com/mikefarah/yq\033[0m" >&2
 fi
 
+# Extraire le nom de la clé YAML d'une ligne (ex: "  image: nginx" -> "image")
+# Usage: key_from_line "  image: nginx"
+key_from_line() {
+    echo "$1" | sed -E 's/:[[:space:]].*//; s/:[[:space:]]*$//'
+}
+
+# Insérer du contenu après la première ligne dont la clé correspond
+# Usage: insert_content_after_key "$text" "$content" "key1|key2"
+# Retourne le texte modifié via stdout
+insert_content_after_key() {
+    local text="$1"
+    local content="$2"
+    local keys_pattern="$3"
+    local result=""
+    local inserted=false
+
+    while IFS= read -r line; do
+        result="${result}${line}"$'\n'
+        if [ "$inserted" = false ] && echo "$line" | grep -qE "^ *(${keys_pattern})"; then
+            result="${result}${content}"$'\n'
+            inserted=true
+        fi
+    done <<< "$text"
+
+    printf '%s' "$result"
+}
+
+# Nettoyer un item YAML : supprime commentaires inline, espaces, et guillemets
+# Usage: clean_yaml_item "item" [strip_dash] [strip_quotes]
+clean_yaml_item() {
+    local item="$1"
+    [ -z "$item" ] && return
+    local strip_dash="${2:-false}"
+    local strip_quotes="${3:-false}"
+
+    # Supprimer les commentaires inline et les espaces
+    item=$(echo "$item" | sed -E 's/[[:space:]]+#.*//; s/^[[:space:]]+//; s/[[:space:]]+$//')
+
+    # Supprimer le tiret YAML si demandé
+    if [ "$strip_dash" = true ]; then
+      item=$(echo "$item" | sed -E 's/^-[[:space:]]*//')
+    fi
+
+    # Supprimer les guillemets si demandé
+    if [ "$strip_quotes" = true ]; then
+        item=$(echo "$item" | sed -E 's/^"(.*)"$/\1/')
+    fi
+
+    printf '%s' "$item"
+}
+
+# Block normalization
+# Usage: normalize_block "block" [indent_level] [output_format]
+#   indent_level: 2 or 4 (default: 4)
+#   output_format: "list" (default) or "map"
+# Converts any block format (list, map, raw key=value) to normalized output
+normalize_block() {
+    local block="$1"
+    local indent="${2:-4}"
+    local format="${3:-list}"
+    local result=""
+    local prefix
+    prefix=$(printf '%*s' "$indent" '')
+
+    [ -z "$block" ] && { printf '%s' "$result"; return; }
+
+    # Detect input format
+    local is_list_dash=false
+    local is_map=false
+    local is_list_raw=false
+
+    if echo "$block" | grep -qE "^[[:space:]]*[-][[:space:]]"; then
+        is_list_dash=true
+    elif echo "$block" | grep -qE "^[[:space:]]+[A-Z_]+:"; then
+        is_map=true
+    elif echo "$block" | sed 's/^[[:space:]]*//' | grep -qE "^[A-Z_]+=.+" || echo "$block" | sed 's/^[[:space:]]*//' | grep -qvE "^[[:space:]]*$|#|^[[:space:]]*[A-Za-z_]+:"; then
+        is_list_raw=true
+    fi
+
+    if [ "$is_list_dash" = true ] && [ "$format" = "list" ]; then
+        while IFS= read -r item; do
+            item=$(clean_yaml_item "$item" true false)
+            [ -n "$item" ] && result="${result}${prefix}- ${item}"$'\n'
+        done <<< "$block"
+    elif [ "$is_map" = true ]; then
+        if [ "$format" = "map" ]; then
+            while IFS= read -r item; do
+                item=$(clean_yaml_item "$item" false false)
+                [ -z "$item" ] && continue
+                local k v
+                k=$(echo "$item" | cut -d: -f1)
+                v=$(echo "$item" | cut -d: -f2- | sed -E 's/^[[:space:]]+//; s/^"(.*)"$/\1/')
+                [ -n "$k" ] && result="${result}${prefix}${k}: ${v}"$'\n'
+            done <<< "$block"
+        else
+            if [ -n "$YQ_CMD" ]; then
+                local stripped
+                stripped=$(echo "$block" | sed 's/^[[:space:]]*//')
+                local normalized
+                normalized=$(echo "$stripped" | $YQ_CMD 'to_entries | .[] | .key + "=" + (.value | tostring)' 2>/dev/null)
+                if [ -n "$normalized" ]; then
+                    while IFS= read -r item; do
+                        [ -n "$item" ] && result="${result}${prefix}- ${item}"$'\n'
+                    done <<< "$normalized"
+                fi
+            else
+                while IFS= read -r item; do
+                    item=$(clean_yaml_item "$item" false false)
+                    [ -z "$item" ] && continue
+                    local k v
+                    k=$(echo "$item" | cut -d: -f1)
+                    v=$(echo "$item" | cut -d: -f2- | sed -E 's/^[[:space:]]+//')
+                    v=$(clean_yaml_item "$v" false true)
+                    [ -n "$k" ] && result="${result}${prefix}- ${k}=${v}"$'\n'
+                done <<< "$block"
+            fi
+        fi
+    elif [ "$is_list_raw" = true ]; then
+        while IFS= read -r item; do
+            item=$(clean_yaml_item "$item" false false)
+            [ -n "$item" ] && result="${result}${prefix}- ${item}"$'\n'
+        done <<< "$block"
+    fi
+
+    printf '%s' "$result"
+}
+
 # Charger la configuration
 load_config() {
     if [ -f "$CONFIG_FILE" ]; then
@@ -537,7 +664,8 @@ EOF
         # Traiter la section environment pour injecter les variables partagées
         local filtered_compose=""
         local in_ports=false
-        local environment_found=false
+        local environment_block=""
+        local environment_indent=""
 
         while IFS= read -r line; do
             # Gérer la section ports
@@ -553,43 +681,57 @@ EOF
                 fi
             fi
 
-            # Détecter la section environment
+            # Détecter et capturer le bloc environment
             if echo "$line" | grep -q "^  environment:"; then
-                environment_found=true
-                filtered_compose="${filtered_compose}${line}"$'\n'
-
-                # Injecter les variables partagées juste après environment:
-                if [ -n "$shared_env_vars" ]; then
-                    filtered_compose="${filtered_compose}    # Variables partagées (depuis config.yml)"$'\n'
-                    while IFS= read -r var; do
-                        [ -n "$var" ] && filtered_compose="${filtered_compose}    - ${var}"$'\n'
-                    done <<< "$shared_env_vars"
-                    # Séparateur pour les variables propres au service
-                    filtered_compose="${filtered_compose}    # Variables exclusives du service"$'\n'
-                fi
+                environment_indent=$(echo "$line" | sed 's/[^ ].*//')
+                environment_block=""
                 continue
+            fi
+
+            # Capturer les items environment (indentés)
+            if [ -n "$environment_indent" ]; then
+                local line_indent
+                line_indent=$(echo "$line" | sed 's/[^ ].*//')
+                if [ "${#line_indent}" -gt "${#environment_indent}" ] || echo "$line" | grep -q "^[[:space:]]*[-]"; then
+                    environment_block="${environment_block}${line}"$'\n'
+                    continue
+                else
+                    environment_indent=""
+                fi
             fi
 
             filtered_compose="${filtered_compose}${line}"$'\n'
         done <<< "$compose_section"
-        
-        # Si pas de section environment, en créer une avec les variables partagées
-        if [ "$environment_found" = false ] && [ -n "$shared_env_vars" ]; then
-            local new_compose=""
-            local added=false
-            while IFS= read -r line; do
-                new_compose="${new_compose}${line}"$'\n'
-                # Ajouter environment après image/container_name
-                if [ "$added" = false ] && echo "$line" | grep -q "^  container_name:"; then
-                    new_compose="${new_compose}  environment:"$'\n'
-                    new_compose="${new_compose}    # Variables partagées (depuis config.yml)"$'\n'
-                    while IFS= read -r var; do
-                        [ -n "$var" ] && new_compose="${new_compose}    - ${var}"$'\n'
-                    done <<< "$shared_env_vars"
-                    added=true
+
+        # Gérer le cas où le fichier se termine dans un bloc environment
+        if [ -n "$environment_indent" ] && [ -n "$environment_block" ]; then
+            environment_block=$(normalize_block "$environment_block" 4 "list")
+            environment_indent=""
+        fi
+
+        # Construire et injecter le bloc environment complet
+        if [ -n "$shared_env_vars" ] || [ -n "$environment_block" ]; then
+            local env_body=""
+            if [ -n "$shared_env_vars" ]; then
+                env_body+="    # Variables partagées (depuis config.yml)"$'\n'
+                while IFS= read -r var; do
+                    [ -n "$var" ] && env_body+="    - ${var}"$'\n'
+                done <<< "$shared_env_vars"
+            fi
+            local svc_items=""
+            if [ -n "$environment_block" ]; then
+                svc_items=$(normalize_block "$environment_block")
+                if [ -n "$svc_items" ]; then
+                    if [ -n "$shared_env_vars" ]; then
+                        env_body+="    # Variables exclusives du service"$'\n'
+                    fi
+                    env_body+="${svc_items}"$'\n'
                 fi
-            done <<< "$filtered_compose"
-            filtered_compose="$new_compose"
+            fi
+
+            local complete_env_section
+            complete_env_section="  environment:"$'\n'"${env_body}"
+            filtered_compose=$(insert_content_after_key "$filtered_compose" "$complete_env_section" "container_name|image")
         fi
 
         # Ajouter 2 espaces d'indentation
