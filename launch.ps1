@@ -25,11 +25,16 @@
 #>
 
 param(
-    [string]$p,
+    [Alias("p", "profile")]
+    [string]$SelectedProfiles,
+
     [Parameter(Position = 0)]
-    [ValidateSet('start', 'stop', 'recreate', 'ps', 'logs', 'sso', 'id', 'ecr-login', 'jfrog-login', 'edit-secrets', 'view-secrets')]
-    [string]$c = 'start',
-    [string]$service
+    [ValidateSet('up', 'start', 'stop', 'down', 'recreate', 'ps', 'logs', 'sso', 'id', 'ecr-login', 'jfrog-login', 'edit-secrets', 'view-secrets')]
+    [string]$Command = 'start',
+
+    [Parameter(Position = 1)]
+    [Alias("s", "service")]
+    [string]$ServiceItem
 )
 
 $PSDefaultParameterValues['*:Encoding'] = 'UTF8'
@@ -239,7 +244,7 @@ function Stop-Services {
 function Recreate-Services {
     Write-Host "🔄 Recréation des services" -ForegroundColor Yellow
     docker compose --profile "*" down
-    Start-Services -profiles $p
+    Start-Services -profiles $SelectedProfiles
 }
 
 # Lister les containers
@@ -360,17 +365,19 @@ function Connect-JfrogLogin {
 # Main
 Validate-DockerCompose
 
-switch ($c) {
-    'start' { Start-Services -profiles $p }
+switch ($Command) {
+    'up' { Start-Services -profiles $SelectedProfiles }
+    'start' { Start-Services -profiles $SelectedProfiles }
     'stop' { Stop-Services }
+    'down' { Stop-Services }
     'recreate' { Recreate-Services }
     'ps' { List-Containers }
-    'logs' { Show-Logs -service $service }
+    'logs' { Show-Logs -service $ServiceItem }
     'sso' { Connect-AwsSso }
     'id' { Show-AwsIdentity }
     'ecr-login' { Connect-EcrLogin }
     'jfrog-login' { Connect-JfrogLogin }
     'edit-secrets' { Edit-Secrets }
     'view-secrets' { View-Secrets }
-    default { Write-Error "Commande inconnue: $c" }
+    default { Write-Error "Commande inconnue: $Command" }
 }

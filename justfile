@@ -1,7 +1,11 @@
 # Dev.Local 2.0 - Justfile
 # Command runner simple - délègue aux scripts PS1/SH
 
+set quiet := true
 set windows-shell := ["pwsh.exe", "-NoLogo", "-Command"]
+
+launch := if os() == "windows" { ".\\launch.ps1" } else { "./launch.sh" }
+manage := if os() == "windows" { ".\\manage-profiles.ps1" } else { "./manage-profiles.sh" }
 
 @default:
     just --list --unsorted
@@ -10,133 +14,84 @@ set windows-shell := ["pwsh.exe", "-NoLogo", "-Command"]
 
 [doc("Démarrer tous les services")]
 [group("docker")]
-start: (_run_script "launch" "start")
+start:
+    {{launch}} start
 
-[windows]
 [doc("Démarrer avec profils spécifiques")]
 [group("docker")]
 start-profile profiles:
-    .\launch.ps1 -p {{profiles}} start
-
-[unix]
-[doc("Démarrer avec profils spécifiques")]
-[group("docker")]
-start-profile profiles:
-    ./launch.sh --profile {{profiles}} start
+    {{launch}} -p {{profiles}} start
 
 [doc("Arrêter tous les services")]
 [group("docker")]
-stop: (_run_script "launch" "stop")
+stop:
+    {{launch}} stop
 
 [doc("Redémarrer les services")]
 [group("docker")]
-restart: (_run_script "launch" "recreate")
+restart:
+    {{launch}} recreate
 
 [doc("Lister les containers actifs")]
 [group("docker")]
-ps: (_run_script "launch" "ps")
+ps:
+    {{launch}} ps
 
-[windows]
 [doc("Voir les logs d'un service")]
 [group("docker")]
 logs service="":
-    .\launch.ps1 logs -service {{service}}
-
-[unix]
-[doc("Voir les logs d'un service")]
-[group("docker")]
-logs service="":
-    ./launch.sh logs {{service}}
+    {{launch}} logs {{service}}
 
 # Profils
 
 [doc("Lister les profile dev.local")]
 [group("profile")]
-profiles: (_run_script "manage-profiles" "list")
+profiles:
+    {{manage}} list
 
 [doc("Regénérer docker-compose.yml et traefik")]
 [group("profile")]
-generate: (_run_script "manage-profiles" "generate")
+generate:
+    {{manage}} generate
 
 [doc("Valider la configuration Docker Compose")]
 [group("profile")]
 validate:
-    @docker compose config --quiet && echo "OK" || echo "ERREUR"
+    docker compose config --quiet && echo "OK" || echo "ERREUR"
 
 # Secrets
 
-[windows]
 [doc("Éditer les secrets SOPS")]
 [group("secrets")]
 secrets-edit:
-    .\launch.ps1 -c edit-secrets
+    {{launch}} edit-secrets
 
-[unix]
-[doc("Éditer les secrets SOPS")]
-[group("secrets")]
-secrets-edit:
-    ./launch.sh edit-secrets
-
-[windows]
 [doc("Voir les secrets déchiffrés")]
 [group("secrets")]
 secrets-view:
-    .\launch.ps1 -c view-secrets
-
-[unix]
-[doc("Voir les secrets déchiffrés")]
-[group("secrets")]
-secrets-view:
-    ./launch.sh view-secrets
+    {{launch}} view-secrets
 
 # AWS
 
-[windows]
 [doc("Connexion AWS SSO")]
 [group("aws")]
 aws-sso:
-    .\launch.ps1 -c sso
+    {{launch}} sso
 
-[unix]
-[doc("Connexion AWS SSO")]
-[group("aws")]
-aws-sso:
-    ./launch.sh sso
-
-[windows]
 [doc("Afficher l'identité AWS")]
 [group("aws")]
 aws-id:
-    .\launch.ps1 -c id
+    {{launch}} id
 
-[unix]
-[doc("Afficher l'identité AWS")]
-[group("aws")]
-aws-id:
-    ./launch.sh id
-
-[windows]
 [doc("Connexion Docker à AWS ECR")]
 [group("aws")]
 ecr-login:
-    .\launch.ps1 -c ecr-login
+    {{launch}} ecr-login
 
-[unix]
-[doc("Connexion Docker à AWS ECR")]
-[group("aws")]
-ecr-login:
-    ./launch.sh ecr-login
-
-[windows]
-[doc("Connexion Docker à JFrog")]
-jfrog-login:
-    .\launch.ps1 -c jfrog-login
-
-[unix]
 [doc("Connexion Docker à JFrog")]
 [group("utilitaires")]
 jfrog-login:
-    ./launch.sh jfrog-login
+    {{launch}} jfrog-login
 
 [doc("Nettoyer containers et volumes")]
 [group("utilitaires")]
@@ -145,7 +100,8 @@ clean:
 
 [doc("Lancer le menu interactif")]
 [group("utilitaires")]
-menu: (_run_script "menu")
+menu:
+    {{ if os() == "windows" { ".\\menu.ps1" } else { "./menu.sh" } }}
 
 [doc("Afficher la configuration Docker Compose")]
 [group("utilitaires")]
