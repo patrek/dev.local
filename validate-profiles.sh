@@ -81,7 +81,7 @@ get_value() {
         # Fallback grep/sed (basique)
         local key
         key=$(echo "$path" | sed 's/^\.//' | tr '.' ' ' | awk '{print $NF}')
-        grep -m1 "^[[:space:]]*${key}:" "$file" 2>/dev/null | sed "s/.*${key}: *//" | sed 's/ *#.*//' | tr -d '\r' || echo "$default"
+        grep -m1 "^[[:space:]]*${key}:" "$file" 2>/dev/null | sed "s/.*${key}: *//; s/ *#.*//" | tr -d '\r' || echo "$default"
     fi
 }
 

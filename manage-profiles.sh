@@ -49,6 +49,133 @@ else
     echo -e "\033[93m  Installez yq v4+ pour un parsing plus fiable: https://github.com/mikefarah/yq\033[0m" >&2
 fi
 
+# Extraire le nom de la clé YAML d'une ligne (ex: "  image: nginx" -> "image")
+# Usage: key_from_line "  image: nginx"
+key_from_line() {
+    echo "$1" | sed -E 's/:[[:space:]].*//; s/:[[:space:]]*$//'
+}
+
+# Insérer du contenu après la première ligne dont la clé correspond
+# Usage: insert_content_after_key "$text" "$content" "key1|key2"
+# Retourne le texte modifié via stdout
+insert_content_after_key() {
+    local text="$1"
+    local content="$2"
+    local keys_pattern="$3"
+    local result=""
+    local inserted=false
+
+    while IFS= read -r line; do
+        result="${result}${line}"$'\n'
+        if [ "$inserted" = false ] && echo "$line" | grep -qE "^ *(${keys_pattern})"; then
+            result="${result}${content}"$'\n'
+            inserted=true
+        fi
+    done <<< "$text"
+
+    printf '%s' "$result"
+}
+
+# Nettoyer un item YAML : supprime commentaires inline, espaces, et guillemets
+# Usage: clean_yaml_item "item" [strip_dash] [strip_quotes]
+clean_yaml_item() {
+    local item="$1"
+    [ -z "$item" ] && return
+    local strip_dash="${2:-false}"
+    local strip_quotes="${3:-false}"
+
+    # Supprimer les commentaires inline et les espaces
+    item=$(echo "$item" | sed -E 's/[[:space:]]+#.*//; s/^[[:space:]]+//; s/[[:space:]]+$//')
+
+    # Supprimer le tiret YAML si demandé
+    if [ "$strip_dash" = true ]; then
+      item=$(echo "$item" | sed -E 's/^-[[:space:]]*//')
+    fi
+
+    # Supprimer les guillemets si demandé
+    if [ "$strip_quotes" = true ]; then
+        item=$(echo "$item" | sed -E 's/^"(.*)"$/\1/')
+    fi
+
+    printf '%s' "$item"
+}
+
+# Block normalization
+# Usage: normalize_block "block" [indent_level] [output_format]
+#   indent_level: 2 or 4 (default: 4)
+#   output_format: "list" (default) or "map"
+# Converts any block format (list, map, raw key=value) to normalized output
+normalize_block() {
+    local block="$1"
+    local indent="${2:-4}"
+    local format="${3:-list}"
+    local result=""
+    local prefix
+    prefix=$(printf '%*s' "$indent" '')
+
+    [ -z "$block" ] && { printf '%s' "$result"; return; }
+
+    # Detect input format
+    local is_list_dash=false
+    local is_map=false
+    local is_list_raw=false
+
+    if echo "$block" | grep -qE "^[[:space:]]*[-][[:space:]]"; then
+        is_list_dash=true
+    elif echo "$block" | grep -qE "^[[:space:]]+[A-Z_]+:"; then
+        is_map=true
+    elif echo "$block" | sed 's/^[[:space:]]*//' | grep -qE "^[A-Z_]+=.+" || echo "$block" | sed 's/^[[:space:]]*//' | grep -qvE "^[[:space:]]*$|#|^[[:space:]]*[A-Za-z_]+:"; then
+        is_list_raw=true
+    fi
+
+    if [ "$is_list_dash" = true ] && [ "$format" = "list" ]; then
+        while IFS= read -r item; do
+            item=$(clean_yaml_item "$item" true false)
+            [ -n "$item" ] && result="${result}${prefix}- ${item}"$'\n'
+        done <<< "$block"
+    elif [ "$is_map" = true ]; then
+        if [ "$format" = "map" ]; then
+            while IFS= read -r item; do
+                item=$(clean_yaml_item "$item" false false)
+                [ -z "$item" ] && continue
+                local k v
+                k=$(echo "$item" | cut -d: -f1)
+                v=$(echo "$item" | cut -d: -f2- | sed -E 's/^[[:space:]]+//; s/^"(.*)"$/\1/')
+                [ -n "$k" ] && result="${result}${prefix}${k}: ${v}"$'\n'
+            done <<< "$block"
+        else
+            if [ -n "$YQ_CMD" ]; then
+                local stripped
+                stripped=$(echo "$block" | sed 's/^[[:space:]]*//')
+                local normalized
+                normalized=$(echo "$stripped" | $YQ_CMD 'to_entries | .[] | .key + "=" + (.value | tostring)' 2>/dev/null)
+                if [ -n "$normalized" ]; then
+                    while IFS= read -r item; do
+                        [ -n "$item" ] && result="${result}${prefix}- ${item}"$'\n'
+                    done <<< "$normalized"
+                fi
+            else
+                while IFS= read -r item; do
+                    item=$(clean_yaml_item "$item" false false)
+                    [ -z "$item" ] && continue
+                    local k v
+                    k=$(echo "$item" | cut -d: -f1)
+                    v=$(echo "$item" | cut -d: -f2- | sed -E 's/^[[:space:]]+//')
+                    v=$(clean_yaml_item "$v" false true)
+                    [ -n "$k" ] && result="${result}${prefix}- ${k}=${v}"$'\n'
+                done <<< "$block"
+            fi
+        fi
+    elif [ "$is_list_raw" = true ]; then
+        while IFS= read -r item; do
+            item=$(clean_yaml_item "$item" false false)
+            [ -n "$item" ] && result="${result}${prefix}- ${item}"$'\n'
+        done <<< "$block"
+    fi
+
+    printf '%s' "$result"
+}
+
 # Charger la configuration
 load_config() {
     if [ -f "$CONFIG_FILE" ]; then
@@ -63,7 +190,7 @@ load_config() {
             fi
             # Extraire seulement le nombre du port (ignorer le commentaire #)
             local port
-            port=$(grep "dozzle_port:" "$CONFIG_FILE" 2>/dev/null | sed 's/.*dozzle_port: *//' | sed 's/ *#.*//' | tr -d '\r')
+            port=$(grep "dozzle_port:" "$CONFIG_FILE" 2>/dev/null | sed 's/.*dozzle_port: *//; s/ *#.*//' | tr -d '\r')
             if [ -n "$port" ]; then
                 DOZZLE_PORT=$port
             fi
@@ -72,7 +199,7 @@ load_config() {
             local ns_line
             ns_line=$(grep -E '^[[:space:]]*namespace:' "$CONFIG_FILE" 2>/dev/null | head -n1 || true)
             if [ -n "$ns_line" ]; then
-                NAMESPACE=$(echo "$ns_line" | sed -E 's/^[[:space:]]*namespace:[[:space:]]*//' | tr -d '"' | tr -d "\r")
+                NAMESPACE=$(echo "$ns_line" | sed -E 's/^[[:space:]]*namespace:[[:space:]]*//; s/"//g; s/[[:space:]]+#.*//' | tr -d '\r')
                 if [ -z "$NAMESPACE" ]; then
                     NAMESPACE="devlocal"
                 fi
@@ -123,7 +250,7 @@ get_shared_env_vars() {
 
     # Fallback: original grep/sed implementation
     local enabled
-    enabled=$(grep -A 10 "^shared_env_config:" "$CONFIG_FILE" | grep "enabled:" | sed 's/.*enabled: *//' | tr -d '\r' | head -1)
+    enabled=$(grep -A 10 "^shared_env_config:" "$CONFIG_FILE" | grep "enabled:" | sed 's/.*enabled: *//; s/ *#.*//' | tr -d '\r' | head -1)
     [ "$enabled" = "false" ] && echo "" && return
 
     # Récupérer les groupes auto_inject
@@ -137,7 +264,7 @@ get_shared_env_vars() {
         if [ "$in_auto_inject" = true ]; then
             if echo "$line" | grep -q "^    - "; then
                 local group
-                group=$(echo "$line" | sed -E 's/^[[:space:]]*-[[:space:]]*//' | tr -d '\r')
+                group=$(echo "$line" | sed -E 's/^[[:space:]]*-[[:space:]]*//; s/[[:space:]]+#.*//; s/[[:space:]]+$//' | tr -d '\r')
                 auto_inject_groups="${auto_inject_groups} ${group}"
             else
                 break
@@ -156,7 +283,7 @@ get_shared_env_vars() {
             if [ "$in_exclude" = true ]; then
                 if echo "$line" | grep -q "^    - "; then
                     local excluded_service
-                    excluded_service=$(echo "$line" | sed -E 's/^[[:space:]]*-[[:space:]]*//' | tr -d '\r')
+                    excluded_service=$(echo "$line" | sed -E 's/^[[:space:]]*-[[:space:]]*//; s/[[:space:]]+#.*//; s/[[:space:]]+$//' | tr -d '\r')
                     if [ "$excluded_service" = "$service_name" ]; then
                         echo ""
                         return
@@ -186,7 +313,7 @@ get_shared_env_vars() {
                 if [ "$in_current_service" = true ]; then
                     if echo "$line" | grep -q "^      - "; then
                         local group
-                        group=$(echo "$line" | sed -E 's/^[[:space:]]*-[[:space:]]*//' | tr -d '\r')
+                        group=$(echo "$line" | sed -E 's/^[[:space:]]*-[[:space:]]*//; s/[[:space:]]+#.*//; s/[[:space:]]+$//' | tr -d '\r')
                         service_groups="${service_groups} ${group}"
                     else
                         in_current_service=false
@@ -223,7 +350,7 @@ get_shared_env_vars() {
                     if echo "$line" | grep -q "^    - "; then
                         local var
                         # Fix: strip only the YAML list marker, preserve hyphens in values
-                        var=$(echo "$line" | sed -E 's/^[[:space:]]*-[[:space:]]*//' | tr -d '\r')
+                        var=$(echo "$line" | sed -E 's/^[[:space:]]*-[[:space:]]*//; s/[[:space:]]+#.*//; s/[[:space:]]+$//' | tr -d '\r')
                         shared_vars="${shared_vars}${var}"$'\n'
                     elif echo "$line" | grep -qE "^[[:space:]]+#"; then
                         # Skip comment lines within the list (at list item indentation or deeper)
@@ -252,16 +379,16 @@ show_profiles() {
         return
     fi
     
-    for profile in $PROFILES_DIR/*.yml; do
+    for profile in "$PROFILES_DIR"/*.yml; do
         [ -f "$profile" ] || continue
         local basename
         basename=$(basename "$profile")
         local name
-        name=$(grep -m1 "^name:" "$profile" | sed 's/name: *//' | tr -d '\r' || echo "${basename%.yml}")
+        name=$(grep -m1 "^name:" "$profile" | sed 's/name: *//; s/ *#.*//' | tr -d '\r' || echo "${basename%.yml}")
         local enabled
-        enabled=$(grep -m1 "^enabled:" "$profile" | sed 's/enabled: *//' | tr -d '\r' || echo "true")
+        enabled=$(grep -m1 "^enabled:" "$profile" | sed 's/enabled: *//; s/ *#.*//' | tr -d '\r' || echo "true")
         local description
-        description=$(grep -m1 '^description:' "$profile" | sed 's/description: *"//' | sed 's/"$//' | tr -d '\r' || echo "Sans description")
+        description=$(grep -m1 '^description:' "$profile" | sed -E 's/description: *"//; s/"$//; s/[[:space:]]+#.*//' | tr -d '\r' || echo "Sans description")
 
         if [ "$enabled" = "true" ]; then
             echo -e "  \033[97m$name\033[0m - \033[92m✅ Activé\033[0m"
@@ -496,19 +623,19 @@ EOF
     fi
     
     # Ajouter chaque service
-    for profile in $PROFILES_DIR/*.yml; do
+    for profile in "$PROFILES_DIR"/*.yml; do
         [ -f "$profile" ] || continue
         
         local enabled
-        enabled=$(grep -m1 "^enabled:" "$profile" | sed 's/enabled: *//' | tr -d '\r' || echo "true")
+        enabled=$(grep -m1 "^enabled:" "$profile" | sed 's/enabled: *//; s/ *#.*//' | tr -d '\r' || echo "true")
         if [ "$enabled" != "true" ]; then
-            echo -e "  \033[90m⏭️  Ignoré (désactivé) : $(basename $profile .yml)\033[0m"
+            echo -e "  \033[90m⏭️  Ignoré (désactivé) : $(basename "$profile" .yml)\033[0m"
             continue
         fi
         
         local name
-        name=$(grep -m1 "^name:" "$profile" | sed 's/name: *//' | tr -d '\r' || basename "$profile" .yml)
-        echo -e "  \033[92m✅ Ajout : $(basename $profile .yml)\033[0m"
+        name=$(grep -m1 "^name:" "$profile" | sed 's/name: *//; s/ *#.*//' | tr -d '\r' || basename "$profile" .yml)
+        echo -e "  \033[92m✅ Ajout : $(basename "$profile" .yml)\033[0m"
 
         # Charger les variables partagées pour ce service
         local shared_env_vars
@@ -520,9 +647,9 @@ EOF
         fi
 
         local always_active
-        always_active=$(grep -m1 "^always_active:" "$profile" | sed 's/always_active: *//' | sed 's/ *#.*//' | tr -d '\r' || echo "true")
+        always_active=$(grep -m1 "^always_active:" "$profile" | sed 's/always_active: *//; s/ *#.*//' | tr -d '\r' || echo "true")
         local docker_profile_raw
-        docker_profile_raw=$(grep -m1 "^docker_profile:" "$profile" | sed 's/docker_profile: *//' | sed 's/ *#.*//' | tr -d '\r')
+        docker_profile_raw=$(grep -m1 "^docker_profile:" "$profile" | sed 's/docker_profile: *//; s/ *#.*//' | tr -d '\r')
         # Considérer null, vide, ou whitespace comme absence de profil
         local docker_profile
         docker_profile=$(echo "$docker_profile_raw" | xargs)  # trim whitespace
@@ -537,7 +664,8 @@ EOF
         # Traiter la section environment pour injecter les variables partagées
         local filtered_compose=""
         local in_ports=false
-        local environment_found=false
+        local environment_block=""
+        local environment_indent=""
 
         while IFS= read -r line; do
             # Gérer la section ports
@@ -553,43 +681,57 @@ EOF
                 fi
             fi
 
-            # Détecter la section environment
+            # Détecter et capturer le bloc environment
             if echo "$line" | grep -q "^  environment:"; then
-                environment_found=true
-                filtered_compose="${filtered_compose}${line}"$'\n'
-
-                # Injecter les variables partagées juste après environment:
-                if [ -n "$shared_env_vars" ]; then
-                    filtered_compose="${filtered_compose}    # Variables partagées (depuis config.yml)"$'\n'
-                    while IFS= read -r var; do
-                        [ -n "$var" ] && filtered_compose="${filtered_compose}    - ${var}"$'\n'
-                    done <<< "$shared_env_vars"
-                    # Séparateur pour les variables propres au service
-                    filtered_compose="${filtered_compose}    # Variables exclusives du service"$'\n'
-                fi
+                environment_indent=$(echo "$line" | sed 's/[^ ].*//')
+                environment_block=""
                 continue
+            fi
+
+            # Capturer les items environment (indentés)
+            if [ -n "$environment_indent" ]; then
+                local line_indent
+                line_indent=$(echo "$line" | sed 's/[^ ].*//')
+                if [ "${#line_indent}" -gt "${#environment_indent}" ] || echo "$line" | grep -q "^[[:space:]]*[-]"; then
+                    environment_block="${environment_block}${line}"$'\n'
+                    continue
+                else
+                    environment_indent=""
+                fi
             fi
 
             filtered_compose="${filtered_compose}${line}"$'\n'
         done <<< "$compose_section"
-        
-        # Si pas de section environment, en créer une avec les variables partagées
-        if [ "$environment_found" = false ] && [ -n "$shared_env_vars" ]; then
-            local new_compose=""
-            local added=false
-            while IFS= read -r line; do
-                new_compose="${new_compose}${line}"$'\n'
-                # Ajouter environment après image/container_name
-                if [ "$added" = false ] && echo "$line" | grep -q "^  container_name:"; then
-                    new_compose="${new_compose}  environment:"$'\n'
-                    new_compose="${new_compose}    # Variables partagées (depuis config.yml)"$'\n'
-                    while IFS= read -r var; do
-                        [ -n "$var" ] && new_compose="${new_compose}    - ${var}"$'\n'
-                    done <<< "$shared_env_vars"
-                    added=true
+
+        # Gérer le cas où le fichier se termine dans un bloc environment
+        if [ -n "$environment_indent" ] && [ -n "$environment_block" ]; then
+            environment_block=$(normalize_block "$environment_block" 4 "list")
+            environment_indent=""
+        fi
+
+        # Construire et injecter le bloc environment complet
+        if [ -n "$shared_env_vars" ] || [ -n "$environment_block" ]; then
+            local env_body=""
+            if [ -n "$shared_env_vars" ]; then
+                env_body+="    # Variables partagées (depuis config.yml)"$'\n'
+                while IFS= read -r var; do
+                    [ -n "$var" ] && env_body+="    - ${var}"$'\n'
+                done <<< "$shared_env_vars"
+            fi
+            local svc_items=""
+            if [ -n "$environment_block" ]; then
+                svc_items=$(normalize_block "$environment_block")
+                if [ -n "$svc_items" ]; then
+                    if [ -n "$shared_env_vars" ]; then
+                        env_body+="    # Variables exclusives du service"$'\n'
+                    fi
+                    env_body+="${svc_items}"$'\n'
                 fi
-            done <<< "$filtered_compose"
-            filtered_compose="$new_compose"
+            fi
+
+            local complete_env_section
+            complete_env_section="  environment:"$'\n'"${env_body}"
+            filtered_compose=$(insert_content_after_key "$filtered_compose" "$complete_env_section" "container_name|image")
         fi
 
         # Ajouter 2 espaces d'indentation
@@ -643,7 +785,7 @@ generate_traefik_dynamic() {
     local services=""
     
     # Générer les services pour chaque profil
-    for profile in $PROFILES_DIR/*.yml; do
+    for profile in "$PROFILES_DIR"/*.yml; do
         [ -f "$profile" ] || continue
 
         # Parse avec yq si disponible, sinon fallback grep/sed
@@ -677,23 +819,23 @@ generate_traefik_dynamic() {
             priority=$(yq e '.traefik.priority // 10' "$profile" 2>/dev/null)
         else
             # Fallback: parsing avec grep/sed
-            enabled=$(grep -m1 "^enabled:" "$profile" | sed 's/enabled: *//' | tr -d '\r' || echo "true")
-            traefik_enabled=$(grep -A 10 "^traefik:" "$profile" | grep "enabled:" | head -1 | sed 's/.*enabled: *//' | tr -d '\r' || echo "false")
+            enabled=$(grep -m1 "^enabled:" "$profile" | sed 's/enabled: *//; s/ *#.*//' | tr -d '\r' || echo "true")
+            traefik_enabled=$(grep -A 10 "^traefik:" "$profile" | grep "enabled:" | head -1 | sed 's/.*enabled: *//; s/ *#.*//' | tr -d '\r' || echo "false")
 
             if [ "$enabled" != "true" ] || [ "$traefik_enabled" != "true" ]; then
                 continue
             fi
 
-            name=$(grep -m1 "^name:" "$profile" | sed 's/name: *//' | tr -d '\r')
+            name=$(grep -m1 "^name:" "$profile" | sed 's/name: *//; s/ *#.*//' | tr -d '\r')
             [ -z "$name" ] && name=$(basename "$profile" .yml)
 
-            local_port=$(grep -A 10 "^traefik:" "$profile" | grep "local_port:" | head -1 | sed 's/.*local_port: *//' | tr -d '\r' || echo "80")
-            docker_port=$(grep -A 10 "^traefik:" "$profile" | grep "docker_port:" | head -1 | sed 's/.*docker_port: *//' | tr -d '\r' || echo "80")
-            health_path=$(grep -A 10 "^traefik:" "$profile" | grep "health_path:" | head -1 | sed 's/.*health_path: *//' | tr -d '\r' || echo "/health")
-            prefix=$(grep -A 10 "^traefik:" "$profile" | grep "prefix:" | head -1 | sed 's/.*prefix: *//' | tr -d '\r')
+            local_port=$(grep -A 10 "^traefik:" "$profile" | grep "local_port:" | head -1 | sed 's/.*local_port: *//; s/ *#.*//' | tr -d '\r' || echo "80")
+            docker_port=$(grep -A 10 "^traefik:" "$profile" | grep "docker_port:" | head -1 | sed 's/.*docker_port: *//; s/ *#.*//' | tr -d '\r' || echo "80")
+            health_path=$(grep -A 10 "^traefik:" "$profile" | grep "health_path:" | head -1 | sed 's/.*health_path: *//; s/ *#.*//' | tr -d '\r' || echo "/health")
+            prefix=$(grep -A 10 "^traefik:" "$profile" | grep "prefix:" | head -1 | sed 's/.*prefix: *//; s/ *#.*//' | tr -d '\r')
             [ -z "$prefix" ] && prefix="/$name"
-            strip_prefix=$(grep -A 10 "^traefik:" "$profile" | grep "strip_prefix:" | head -1 | sed 's/.*strip_prefix: *//' | tr -d '\r' || echo "false")
-            priority=$(grep -A 10 "^traefik:" "$profile" | grep "priority:" | head -1 | sed 's/.*priority: *//' | tr -d '\r' || echo "10")
+            strip_prefix=$(grep -A 10 "^traefik:" "$profile" | grep "strip_prefix:" | head -1 | sed 's/.*strip_prefix: *//; s/ *#.*//' | tr -d '\r' || echo "false")
+            priority=$(grep -A 10 "^traefik:" "$profile" | grep "priority:" | head -1 | sed 's/.*priority: *//; s/ *#.*//' | tr -d '\r' || echo "10")
         fi
 
         # --- Middleware ---
@@ -792,15 +934,15 @@ sync_secrets() {
     # Récupérer toutes les variables des profils
     declare -A secret_vars
     
-    for profile in $PROFILES_DIR/*.yml; do
+    for profile in "$PROFILES_DIR"/*.yml; do
         [ -f "$profile" ] || continue
         
         local enabled
-        enabled=$(grep -m1 "^enabled:" "$profile" | sed 's/enabled: *//' | tr -d '\r' || echo "true")
+        enabled=$(grep -m1 "^enabled:" "$profile" | sed 's/enabled: *//; s/ *#.*//' | tr -d '\r' || echo "true")
         [ "$enabled" != "true" ] && continue
         
         local profile_name
-        profile_name=$(grep -m1 "^name:" "$profile" | sed 's/name: *//' | tr -d '\r' || basename "$profile" .yml)
+        profile_name=$(grep -m1 "^name:" "$profile" | sed 's/name: *//; s/ *#.*//' | tr -d '\r' || basename "$profile" .yml)
 
         # Méthode 1 : Lire la section secrets:
         if grep -q "^secrets:" "$profile"; then
@@ -813,16 +955,16 @@ sync_secrets() {
                 if [ "$in_secrets" = true ]; then
                     if echo "$line" | grep -q "^  - name:"; then
                         local secret_name
-                        secret_name=$(echo "$line" | sed 's/.*name: *//' | tr -d '\r')
+                        secret_name=$(echo "$line" | sed 's/.*name: *//; s/ *#.*//' | tr -d '\r')
                         local secret_desc=""
                         local secret_default="changeme"
                         
                         # Lire les lignes suivantes pour description et default
                         while IFS= read -r next_line; do
                             if echo "$next_line" | grep -q "^    description:"; then
-                                secret_desc=$(echo "$next_line" | sed 's/.*description: *"//' | sed 's/"$//' | tr -d '\r')
+                                secret_desc=$(echo "$next_line" | sed -E 's/.*description: *"//; s/"$//; s/[[:space:]]+#.*//' | tr -d '\r')
                             elif echo "$next_line" | grep -q "^    default:"; then
-                                secret_default=$(echo "$next_line" | sed 's/.*default: *//' | tr -d '\r')
+                                secret_default=$(echo "$next_line" | sed 's/.*default: *//; s/ *#.*//' | tr -d '\r')
                                 break
                             elif echo "$next_line" | grep -qE "^(  -|[a-z])"; then
                                 break
