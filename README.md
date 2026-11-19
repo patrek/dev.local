@@ -1078,6 +1078,8 @@ aws:
 
 Sans cette section, ces deux valeurs sont utilisées par défaut. La variable d'environnement `AWS_PROFILE`, si elle est définie, a priorité sur `aws.profile`.
 
+Les trois commandes passent toujours `--profile` à AWS CLI : les identifiants par défaut (`[default]` de `~/.aws/credentials`) ne sont donc plus utilisés implicitement. Pour vous en servir, indiquez `profile: default` dans `config.yml` ou exportez `AWS_PROFILE=default`.
+
 ## 🐧 Support Linux/macOS
 
 Dev.Local est **100% compatible** avec Linux et macOS grâce aux scripts Bash !
