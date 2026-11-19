@@ -50,21 +50,21 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Lire l'URL d'un registre dans config.yml (ex: get_registry_url ecr <défaut>)
+# Lire une valeur de config.yml (ex: get_config_value .aws.region <défaut>)
 # yq est chargé dans un sous-shell : s'il est indisponible, on garde la valeur par défaut
-get_registry_url() {
-    local registry="$1"
+get_config_value() {
+    local path="$1"
     local default="$2"
-    local url=""
+    local value=""
 
     if [ -f "config.yml" ]; then
-        url=$(source "lib/yq.sh" && yq e ".registries.${registry}.url" "config.yml" 2>/dev/null)
+        value=$(source "lib/yq.sh" && yq e "$path" "config.yml" 2>/dev/null)
     fi
 
-    if [ -z "$url" ] || [ "$url" = "null" ]; then
+    if [ -z "$value" ] || [ "$value" = "null" ]; then
         echo "$default"
     else
-        echo "$url"
+        echo "$value"
     fi
 }
 
@@ -313,7 +313,7 @@ connect_aws_sso() {
     fi
     
     echo -e "\033[96m🔐 Connexion AWS SSO...\033[0m"
-    aws sso login --profile ESG-DV-PowerUser-SSO
+    aws sso login --profile "$(get_config_value .aws.profile "ESG-DV-PowerUser-SSO")"
 }
 
 # AWS Identity
@@ -336,12 +336,12 @@ connect_ecr_login() {
 
     # Lire l'URL ECR depuis config.yml
     local ecr_url
-    ecr_url=$(get_registry_url ecr "<id>.dkr.ecr.ca-central-1.amazonaws.com")
+    ecr_url=$(get_config_value .registries.ecr.url "<id>.dkr.ecr.ca-central-1.amazonaws.com")
 
     echo -e "\033[96m🐳 Connexion Docker à AWS ECR...\033[0m"
 
     # Le mot de passe passe directement d'un processus à l'autre, sans fichier temporaire
-    aws ecr get-login-password --region ca-central-1 | docker login --username AWS --password-stdin "$ecr_url"
+    aws ecr get-login-password --region "$(get_config_value .aws.region "ca-central-1")" | docker login --username AWS --password-stdin "$ecr_url"
     local statuses=("${PIPESTATUS[@]}")
 
     if [ "${statuses[0]}" -ne 0 ]; then
@@ -355,7 +355,7 @@ connect_ecr_login() {
 connect_jfrog_login() {
     # Lire l'URL JFrog depuis config.yml
     local jfrog_url
-    jfrog_url=$(get_registry_url jfrog "custom.jfrog.io")
+    jfrog_url=$(get_config_value .registries.jfrog.url "custom.jfrog.io")
     
     echo -e "\033[96m🐳 Connexion Docker à JFrog...\033[0m"
     echo -e "\033[93mUtilisez: docker login $jfrog_url\033[0m"

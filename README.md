@@ -1068,7 +1068,15 @@ just start
 
 ### Configuration du profil AWS
 
-Les scripts utilisent le profil AWS `ESG-DV-PowerUser-SSO` par défaut. Pour utiliser un autre profil, modifiez la fonction `Connect-AwsSso` dans `launch.ps1` ou `connect_aws_sso` dans `launch.sh`.
+Le profil AWS (`just aws-sso`) et la région (`just ecr-login`) se règlent dans `config.yml` :
+
+```yaml
+aws:
+  profile: ESG-DV-PowerUser-SSO
+  region: ca-central-1
+```
+
+Sans cette section, ces deux valeurs sont utilisées par défaut.
 
 ## 🐧 Support Linux/macOS
 

@@ -305,6 +305,32 @@ function Show-Logs {
     }
 }
 
+# Lire une valeur de config.yml (ex: Get-ConfigValue @('aws', 'region') 'ca-central-1')
+function Get-ConfigValue {
+    param(
+        [string[]]$path,
+        [string]$default
+    )
+
+    $configPath = Join-Path $PSScriptRoot "config.yml"
+    if (-not (Test-Path $configPath)) {
+        return $default
+    }
+
+    $value = Get-Content $configPath -Raw | ConvertFrom-Yaml -ErrorAction SilentlyContinue
+    foreach ($key in $path) {
+        if ($value -isnot [System.Collections.IDictionary] -or -not $value.Contains($key)) {
+            return $default
+        }
+        $value = $value[$key]
+    }
+
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        return $default
+    }
+    return [string]$value
+}
+
 # AWS SSO
 function Connect-AwsSso {
     if (-not (Get-Command aws -ErrorAction SilentlyContinue)) {
@@ -313,7 +339,7 @@ function Connect-AwsSso {
     }
     
     Write-Host "🔐 Connexion AWS SSO..." -ForegroundColor Cyan
-    aws sso login --profile ESG-DV-PowerUser-SSO
+    aws sso login --profile (Get-ConfigValue @('aws', 'profile') 'ESG-DV-PowerUser-SSO')
 }
 
 # AWS Identity
@@ -334,21 +360,13 @@ function Connect-EcrLogin {
         return
     }
 
-    # Lire l'URL ECR depuis config.yml
-    $configPath = Join-Path $PSScriptRoot "config.yml"
-    $ecrUrl = "<id>.dkr.ecr.ca-central-1.amazonaws.com"  # Valeur par défaut
-
-    if (Test-Path $configPath) {
-        $config = Get-Content $configPath -Raw | ConvertFrom-Yaml -ErrorAction SilentlyContinue
-        if ($config.registries.ecr.url) {
-            $ecrUrl = $config.registries.ecr.url
-        }
-    }
+    $ecrUrl = Get-ConfigValue @('registries', 'ecr', 'url') '<id>.dkr.ecr.ca-central-1.amazonaws.com'
+    $region = Get-ConfigValue @('aws', 'region') 'ca-central-1'
 
     Write-Host "🐳 Connexion Docker à AWS ECR..." -ForegroundColor Cyan
 
     # Le mot de passe reste en mémoire et passe à docker par l'entrée standard, sans fichier temporaire
-    $password = aws ecr get-login-password --region ca-central-1
+    $password = aws ecr get-login-password --region $region
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrEmpty($password)) {
         Write-Error "Échec de récupération du mot de passe ECR"
         return 1
@@ -360,17 +378,8 @@ function Connect-EcrLogin {
 
 # Docker JFrog Login
 function Connect-JfrogLogin {
-    # Lire l'URL JFrog depuis config.yml
-    $configPath = Join-Path $PSScriptRoot "config.yml"
-    $jfrogUrl = "custom.jfrog.io"  # Valeur par défaut
-    
-    if (Test-Path $configPath) {
-        $config = Get-Content $configPath -Raw | ConvertFrom-Yaml -ErrorAction SilentlyContinue
-        if ($config.registries.jfrog.url) {
-            $jfrogUrl = $config.registries.jfrog.url
-        }
-    }
-    
+    $jfrogUrl = Get-ConfigValue @('registries', 'jfrog', 'url') 'custom.jfrog.io'
+
     Write-Host "🐳 Connexion Docker à JFrog..." -ForegroundColor Cyan
     Write-Host "Utilisez: docker login $jfrogUrl" -ForegroundColor Yellow
     Write-Host "Entrez vos identifiants JFrog lorsque demandé" -ForegroundColor Yellow
