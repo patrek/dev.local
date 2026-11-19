@@ -16,6 +16,39 @@ GREEN='\033[92m'
 CYAN='\033[96m'
 RESET='\033[0m'
 
+show_usage() {
+    cat << EOF
+VALIDATION DES PROFILS DEV.LOCAL 2.0
+
+Usage:
+    ./validate-profiles.sh           Valider tous les profils
+    ./validate-profiles.sh --help    Afficher cette aide
+
+Valide la syntaxe YAML, les champs requis et les valeurs des profils du répertoire profiles/.
+
+Codes de sortie:
+    0 - Tous les profils sont valides (avec ou sans avertissements)
+    1 - Erreurs détectées
+EOF
+}
+
+# Arguments : traités avant de chercher yq, pour que l'aide ne dépende pas de lui
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+    for arg in "$@"; do
+        case "$arg" in
+            -h|--help)
+                show_usage
+                exit 0
+                ;;
+            *)
+                echo -e "${RED}Argument inconnu: $arg${RESET}" >&2
+                show_usage >&2
+                exit 1
+                ;;
+        esac
+    done
+fi
+
 # yq local ou via Docker (voir lib/yq.sh)
 cd "$(dirname "${BASH_SOURCE[0]}")" || exit 1
 source "lib/yq.sh"

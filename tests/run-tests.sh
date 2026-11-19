@@ -152,6 +152,20 @@ test_valid_profiles() {
     else
         fail "validate-profiles.sh accepte les fixtures" "$output"
     fi
+
+    if output=$(bash "$dir/validate-profiles.sh" --help 2>&1) && echo "$output" | grep -q "Usage:"; then
+        pass "validate-profiles.sh --help affiche l'aide"
+    else
+        fail "validate-profiles.sh --help affiche l'aide" "$output"
+    fi
+
+    if output=$(bash "$dir/validate-profiles.sh" --inconnu 2>&1); then
+        fail "validate-profiles.sh refuse un argument inconnu" "code 0 au lieu d'une erreur"
+    elif echo "$output" | grep -q "Argument inconnu: --inconnu"; then
+        pass "validate-profiles.sh refuse un argument inconnu"
+    else
+        fail "validate-profiles.sh refuse un argument inconnu" "$output"
+    fi
 }
 
 # Chaque fichier de fixtures/invalid commence par "# expect: <texte>" :
