@@ -4,12 +4,17 @@ secrets.env.dec
 .env
 .env.local
 
+# Clés privées Age (ne JAMAIS commiter)
+age-key.txt
+*.agekey
+
 # Fichiers générés
 docker-compose.yml
 traefik/dynamic.yml
 
 # IDE
 .idea/
+.codegraph/
 .vscode/
 *.iml
 
