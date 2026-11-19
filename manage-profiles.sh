@@ -58,6 +58,8 @@ NAMED_VOLUMES_EXPR='(.["docker-compose"].volumes | select(tag == "!!seq") | .[] 
 #     l'ordre du fichier et avec le texte tel qu'il est écrit (CLE: sans valeur donne CLE=) ;
 #     une liste vide est créée si la clé est absente ;
 #   - ancres et alias résolus, commentaires retirés ;
+#   - ports en syntaxe longue (target / published) : host_ip: 127.0.0.1 ajouté s'il est absent,
+#     comme bind_port_to_localhost le fait pour la syntaxe courte ;
 #   - ports et volumes absents (null) retirés : yq crée ces clés à la lecture d'un chemin
 #     absent, ici et dans NAMED_VOLUMES_EXPR.
 COMPOSE_SECTION_EXPR='(.["docker-compose"] | select(tag == "!!map") | explode(.)
@@ -65,6 +67,8 @@ COMPOSE_SECTION_EXPR='(.["docker-compose"] | select(tag == "!!map") | explode(.)
     | with(.environment | select(tag == "!!null"); . = [])
     | with(.environment | select(tag == "!!map");
         . = (to_entries | map((.key | tostring) + "=" + (.value | with(select(tag == "!!null"); . = "") | tostring))))
+    | with(.ports | select(tag == "!!seq") | .[] | select(tag == "!!map" and (has("host_ip") | not));
+        .host_ip = "127.0.0.1")
     | (., (.ports, .environment | select(tag == "!!seq"))) style = ""
     | ... comments = ""
     | del((.ports, .volumes) | select(tag == "!!null")))'

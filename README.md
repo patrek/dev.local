@@ -497,7 +497,8 @@ Par défaut, la section `ports:` d'un profil **n'est pas reprise** dans `docker-
 Pour publier les ports d'un profil, ajoutez `expose_ports: true` à la racine du profil :
 
 - les ports sont liés à `127.0.0.1` (`"8000:8000"` devient `"127.0.0.1:8000:8000"`) ;
-- pour exposer un port sur le réseau local, précisez l'IP : `"0.0.0.0:8000:8000"` ;
+- la syntaxe longue est prise en charge : `host_ip: 127.0.0.1` est ajouté aux entrées `target` / `published` qui ne précisent pas d'IP ;
+- pour exposer un port sur le réseau local, précisez l'IP : `"0.0.0.0:8000:8000"`, ou `host_ip: 0.0.0.0` en syntaxe longue ;
 - la validation ne signale les conflits de ports qu'entre profils qui les publient.
 
 ### Section `secrets:` (recommandée)

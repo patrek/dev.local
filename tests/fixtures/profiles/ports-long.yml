@@ -1,0 +1,26 @@
+# Syntaxe longue des ports (target / published) avec expose_ports: true :
+# host_ip: 127.0.0.1 est ajouté quand le profil ne précise pas d'IP hôte
+name: ports-long
+description: "Ports en syntaxe longue"
+enabled: true
+always_active: true
+docker_profile: null
+expose_ports: true
+
+docker-compose:
+  image: nginx:alpine
+  container_name: ports-long
+  ports:
+    - target: 80
+      published: 8030
+    - target: 81
+      published: "${LONG_ALT_PORT:-8031}"
+      protocol: tcp
+      mode: host
+    - target: 82
+      published: 8032
+      host_ip: 127.0.0.1
+    - "8033:83"
+
+traefik:
+  enabled: false

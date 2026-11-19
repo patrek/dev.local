@@ -230,6 +230,47 @@ services:
     networks:
       - traefik-network
 
+  # Service: ports-long-hidden
+  ports-long-hidden:
+    image: nginx:alpine
+    container_name: ports-long-hidden
+    environment:
+      # Variables partagées (depuis config.yml)
+      - LOG_LEVEL=info
+      - TZ=America/Toronto
+      - API_GATEWAY_URL=https://api.example.com
+    extra_hosts:
+      - "external-ip:host-gateway"
+    networks:
+      - traefik-network
+
+  # Service: ports-long
+  ports-long:
+    image: nginx:alpine
+    container_name: ports-long
+    ports:
+      - target: 80
+        published: 8030
+        host_ip: 127.0.0.1
+      - target: 81
+        published: "${LONG_ALT_PORT:-8031}"
+        protocol: tcp
+        mode: host
+        host_ip: 127.0.0.1
+      - target: 82
+        published: 8032
+        host_ip: 127.0.0.1
+      - "127.0.0.1:8033:83"
+    environment:
+      # Variables partagées (depuis config.yml)
+      - LOG_LEVEL=info
+      - TZ=America/Toronto
+      - API_GATEWAY_URL=https://api.example.com
+    extra_hosts:
+      - "external-ip:host-gateway"
+    networks:
+      - traefik-network
+
   # Service: secrets-auto
   secrets-auto:
     image: nginx:${AUTO_IMAGE_TAG:-alpine}

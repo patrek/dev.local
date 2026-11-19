@@ -72,6 +72,7 @@ check_golden() {
 
 # Aucun port ne doit être publié sur toutes les interfaces par défaut : chaque entrée
 # d'une section ports commence par 127.0.0.1:, sauf l'IP explicite de la fixture web.
+# En syntaxe longue (target / published), l'entrée doit contenir host_ip: 127.0.0.1.
 # Une section ports qui n'est pas écrite en liste (ports: [...]) est aussi une erreur.
 check_ports_bound_to_localhost() {
     local compose_file="$1"
@@ -79,15 +80,30 @@ check_ports_bound_to_localhost() {
 
     local unbound
     unbound=$(awk -v allowed="$explicit_ip_port" '
-        /^    ports:/ { in_ports = ($0 == "    ports:"); if (!in_ports) print; next }
+        function flush_long() { if (long_item != "" && !long_bound) print long_item; long_item = "" }
+        function is_local_ip(text) { return text ~ /^host_ip: ["\047]?127\.0\.0\.1["\047]?$/ }
+        /^    ports:/ { flush_long(); in_ports = ($0 == "    ports:"); if (!in_ports) print; next }
         in_ports && /^      - / {
+            flush_long()
             port = $0
             sub(/^      - /, "", port)
+            if (port ~ /^[a-z_]+:( |$)/) {
+                long_item = $0
+                long_bound = is_local_ip(port)
+                next
+            }
             gsub(/["\047]/, "", port)
             if (port !~ /^127\.0\.0\.1:/ && port != allowed) print
             next
         }
-        { in_ports = 0 }
+        in_ports && /^        [a-z_]+:/ {
+            field = $0
+            sub(/^        /, "", field)
+            if (is_local_ip(field)) long_bound = 1
+            next
+        }
+        { flush_long(); in_ports = 0 }
+        END { flush_long() }
     ' "$compose_file")
 
     if [ -z "$unbound" ]; then

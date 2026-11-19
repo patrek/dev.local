@@ -355,10 +355,15 @@ metadata:
 
 # Lie un port (syntaxe courte) à 127.0.0.1 s'il ne précise pas d'IP hôte.
 #   "8090:80" -> "127.0.0.1:8090:80"      "80" -> "127.0.0.1::80"
-# Les ports avec IP explicite (ex: "0.0.0.0:8090:80") et la syntaxe longue sont conservés.
+# Syntaxe longue (target / published) : host_ip: 127.0.0.1 est ajouté s'il est absent.
+# Les ports avec IP explicite (ex: "0.0.0.0:8090:80", host_ip: 0.0.0.0) sont conservés.
 function ConvertTo-LocalhostPortBinding {
     param($Port)
 
+    if ($Port -is [System.Collections.IDictionary]) {
+        if (-not $Port.Contains('host_ip')) { $Port['host_ip'] = '127.0.0.1' }
+        return $Port
+    }
     if ($Port -isnot [string] -and $Port -isnot [ValueType]) { return $Port }
 
     $spec = [string]$Port

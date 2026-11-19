@@ -1,0 +1,16 @@
+# Syntaxe longue des ports sans expose_ports : la section ports est retirée
+name: ports-long-hidden
+description: "Ports en syntaxe longue, non publiés"
+enabled: true
+always_active: true
+docker_profile: null
+
+docker-compose:
+  image: nginx:alpine
+  container_name: ports-long-hidden
+  ports:
+    - target: 80
+      published: 8034
+
+traefik:
+  enabled: false
