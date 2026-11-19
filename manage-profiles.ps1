@@ -24,7 +24,7 @@
 
 param(
     [Parameter(Mandatory = $false)]
-    [ValidateSet('add', 'list', 'remove', 'enable', 'disable', 'generate', 'init-secrets', 'sync-secrets')]
+    [ValidateSet('add', 'list', 'remove', 'enable', 'disable', 'generate', 'init-secrets', 'sync-secrets', 'list-secrets')]
     [string]$Action = 'list'
 )
 
@@ -746,36 +746,9 @@ function Protect-SecretsContent {
     }
 }
 
-# Fonction pour synchroniser secrets.env avec les profils
-function Sync-Secrets {
-    Write-Host "`n🔄 SYNCHRONISATION DES SECRETS" -ForegroundColor Cyan
-    Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor DarkGray
-    
-    # Vérifier SOPS
-    if (-not (Get-Command sops -ErrorAction SilentlyContinue)) {
-        Write-Error "SOPS n'est pas installé. Cette fonctionnalité nécessite SOPS."
-        Write-Host "`n  💡 Installez SOPS : https://github.com/mozilla/sops/releases" -ForegroundColor Yellow
-        return
-    }
-    
-    # Vérifier la configuration SOPS
-    if (-not (Test-Path ".sops.yaml")) {
-        Write-Error "Fichier .sops.yaml introuvable. Configurez SOPS d'abord."
-        return
-    }
-    
-    $sopsConfig = Get-Content ".sops.yaml" -Raw
-    if (-not ($sopsConfig -match 'kms:' -or $sopsConfig -match 'age:')) {
-        Write-Warning "SOPS n'est pas configuré avec une clé KMS ou Age."
-        Write-Host "`n  💡 Éditez .sops.yaml et configurez :" -ForegroundColor Yellow
-        Write-Host "     - AWS KMS : kms: 'arn:aws:kms:...'" -ForegroundColor Gray
-        Write-Host "     - Age : age: 'age1...'" -ForegroundColor Gray
-        Write-Host "`n  Pour générer une clé Age :" -ForegroundColor Yellow
-        Write-Host "     age-keygen -o age-key.txt" -ForegroundColor Gray
-        return
-    }
-    
-    # Récupérer toutes les variables ${VAR:-default} des profils
+# Détecte les variables de secrets des profils activés, sans SOPS ni déchiffrement.
+# Retourne une table nom -> valeur par défaut.
+function Get-SecretVariables {
     $profiles = Get-ChildItem -Path $ProfilesDir -Filter "*.yml" -ErrorAction SilentlyContinue
     $secretVars = @{}
     
@@ -829,7 +802,51 @@ function Sync-Secrets {
             }
         }
     }
+
+    return $secretVars
+}
+
+# Affiche les noms des variables de secrets détectées, triés, un par ligne
+function Show-SecretVariables {
+    # 6>$null : masque les messages de détection (Write-Host)
+    $secretVars = Get-SecretVariables 6>$null
+    [string[]]$names = @($secretVars.Keys)
+    [Array]::Sort($names, [StringComparer]::Ordinal)
+    $names
+}
+
+# Fonction pour synchroniser secrets.env avec les profils
+function Sync-Secrets {
+    Write-Host "`n🔄 SYNCHRONISATION DES SECRETS" -ForegroundColor Cyan
+    Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor DarkGray
     
+    # Vérifier SOPS
+    if (-not (Get-Command sops -ErrorAction SilentlyContinue)) {
+        Write-Error "SOPS n'est pas installé. Cette fonctionnalité nécessite SOPS."
+        Write-Host "`n  💡 Installez SOPS : https://github.com/mozilla/sops/releases" -ForegroundColor Yellow
+        return
+    }
+    
+    # Vérifier la configuration SOPS
+    if (-not (Test-Path ".sops.yaml")) {
+        Write-Error "Fichier .sops.yaml introuvable. Configurez SOPS d'abord."
+        return
+    }
+    
+    $sopsConfig = Get-Content ".sops.yaml" -Raw
+    if (-not ($sopsConfig -match 'kms:' -or $sopsConfig -match 'age:')) {
+        Write-Warning "SOPS n'est pas configuré avec une clé KMS ou Age."
+        Write-Host "`n  💡 Éditez .sops.yaml et configurez :" -ForegroundColor Yellow
+        Write-Host "     - AWS KMS : kms: 'arn:aws:kms:...'" -ForegroundColor Gray
+        Write-Host "     - Age : age: 'age1...'" -ForegroundColor Gray
+        Write-Host "`n  Pour générer une clé Age :" -ForegroundColor Yellow
+        Write-Host "     age-keygen -o age-key.txt" -ForegroundColor Gray
+        return
+    }
+    
+    # Récupérer toutes les variables de secrets des profils
+    $secretVars = Get-SecretVariables
+
     if ($secretVars.Count -eq 0) {
         Write-Host "  ℹ️  Aucune variable de secrets trouvée dans les profils" -ForegroundColor Yellow
         return
@@ -969,5 +986,6 @@ switch ($Action) {
     'generate' { Generate-DockerCompose }
     'init-secrets' { Initialize-Secrets }
     'sync-secrets' { Sync-Secrets }
+    'list-secrets' { Show-SecretVariables }
     default { Show-Profiles }
 }

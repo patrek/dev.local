@@ -771,37 +771,12 @@ EOF
     echo -e "\033[92m✅ traefik/dynamic.yml généré\033[0m"
 }
 
-# Fonction pour synchroniser secrets.env
-sync_secrets() {
-    echo -e "\n\033[96m🔄 SYNCHRONISATION DES SECRETS\033[0m"
-    echo -e "\033[90m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
-    
-    # Vérifier SOPS
-    if ! command -v sops &> /dev/null; then
-        echo -e "\033[91mSOPS n'est pas installé. Cette fonctionnalité nécessite SOPS.\033[0m"
-        echo -e "\n  \033[93m💡 Installez SOPS : https://github.com/mozilla/sops/releases\033[0m"
-        return 1
-    fi
-    
-    # Vérifier la configuration SOPS
-    if [ ! -f ".sops.yaml" ]; then
-        echo -e "\033[91mFichier .sops.yaml introuvable. Configurez SOPS d'abord.\033[0m"
-        return 1
-    fi
-    
-    if ! grep -qE '(kms:|age:)' ".sops.yaml"; then
-        echo -e "\033[93mSOPS n'est pas configuré avec une clé KMS ou Age.\033[0m"
-        echo -e "\n  \033[93m💡 Éditez .sops.yaml et configurez :\033[0m"
-        echo -e "     \033[90m- AWS KMS : kms: 'arn:aws:kms:...'\033[0m"
-        echo -e "     \033[90m- Age : age: 'age1...'\033[0m"
-        echo -e "\n  \033[93mPour générer une clé Age :\033[0m"
-        echo -e "     \033[90mage-keygen -o age-key.txt\033[0m"
-        return 1
-    fi
-    
-    # Récupérer toutes les variables des profils
-    declare -A secret_vars
-    
+# Détecte les variables de secrets des profils activés, sans SOPS ni déchiffrement.
+# Résultat dans le tableau associatif global SECRET_VARS (nom -> valeur par défaut).
+detect_secret_vars() {
+    declare -gA SECRET_VARS=()
+    local profile
+
     for profile in "$PROFILES_DIR"/*.yml; do
         [ -f "$profile" ] || continue
         
@@ -840,8 +815,8 @@ sync_secrets() {
                             fi
                         done
                         
-                        if [ -n "$secret_name" ] && [ -z "${secret_vars[$secret_name]}" ]; then
-                            secret_vars["$secret_name"]="$secret_default"
+                        if [ -n "$secret_name" ] && [ -z "${SECRET_VARS[$secret_name]}" ]; then
+                            SECRET_VARS["$secret_name"]="$secret_default"
                             echo -e "  \033[90m📌 [$profile_name] $secret_name ($secret_desc)\033[0m"
                         fi
                     elif echo "$line" | grep -qE "^[a-z]"; then
@@ -860,20 +835,59 @@ sync_secrets() {
                 default_value=$(echo "$match" | sed 's/.*:-\([^}]*\)}.*/\1/')
                 [ -z "$default_value" ] && default_value="changeme"
             
-                if [ -n "$var_name" ] && [ -z "${secret_vars[$var_name]}" ]; then
-                    secret_vars["$var_name"]="$default_value"
+                if [ -n "$var_name" ] && [ -z "${SECRET_VARS[$var_name]}" ]; then
+                    SECRET_VARS["$var_name"]="$default_value"
                     echo -e "  \033[90m📌 [$profile_name] $var_name (auto-détecté)\033[0m"
                 fi
             done < <(yq e '.docker-compose.environment[]' "$profile" 2>/dev/null | grep -o '\${[A-Z_][A-Z0-9_]*:-[^}]*}' || true)
         fi
     done
+}
+
+# Affiche les noms des variables de secrets détectées, triés, un par ligne
+list_secret_vars() {
+    detect_secret_vars > /dev/null
+    [ ${#SECRET_VARS[@]} -eq 0 ] && return 0
+    printf '%s\n' "${!SECRET_VARS[@]}" | LC_ALL=C sort
+}
+
+# Fonction pour synchroniser secrets.env
+sync_secrets() {
+    echo -e "\n\033[96m🔄 SYNCHRONISATION DES SECRETS\033[0m"
+    echo -e "\033[90m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
     
-    if [ ${#secret_vars[@]} -eq 0 ]; then
+    # Vérifier SOPS
+    if ! command -v sops &> /dev/null; then
+        echo -e "\033[91mSOPS n'est pas installé. Cette fonctionnalité nécessite SOPS.\033[0m"
+        echo -e "\n  \033[93m💡 Installez SOPS : https://github.com/mozilla/sops/releases\033[0m"
+        return 1
+    fi
+    
+    # Vérifier la configuration SOPS
+    if [ ! -f ".sops.yaml" ]; then
+        echo -e "\033[91mFichier .sops.yaml introuvable. Configurez SOPS d'abord.\033[0m"
+        return 1
+    fi
+    
+    if ! grep -qE '(kms:|age:)' ".sops.yaml"; then
+        echo -e "\033[93mSOPS n'est pas configuré avec une clé KMS ou Age.\033[0m"
+        echo -e "\n  \033[93m💡 Éditez .sops.yaml et configurez :\033[0m"
+        echo -e "     \033[90m- AWS KMS : kms: 'arn:aws:kms:...'\033[0m"
+        echo -e "     \033[90m- Age : age: 'age1...'\033[0m"
+        echo -e "\n  \033[93mPour générer une clé Age :\033[0m"
+        echo -e "     \033[90mage-keygen -o age-key.txt\033[0m"
+        return 1
+    fi
+    
+    # Récupérer toutes les variables des profils
+    detect_secret_vars
+    
+    if [ ${#SECRET_VARS[@]} -eq 0 ]; then
         echo -e "  \033[93mℹ️  Aucune variable de secrets trouvée dans les profils\033[0m"
         return 0
     fi
     
-    echo -e "\n  \033[96mTotal: ${#secret_vars[@]} variable(s) trouvée(s)\033[0m"
+    echo -e "\n  \033[96mTotal: ${#SECRET_VARS[@]} variable(s) trouvée(s)\033[0m"
     
     # Lire le fichier secrets.env existant
     declare -A existing_secrets
@@ -897,9 +911,9 @@ sync_secrets() {
 
     # Identifier les nouvelles variables
     declare -A new_vars
-    for var in "${!secret_vars[@]}"; do
+    for var in "${!SECRET_VARS[@]}"; do
         if [ -z "${existing_secrets[$var]}" ]; then
-            new_vars["$var"]="${secret_vars[$var]}"
+            new_vars["$var"]="${SECRET_VARS[$var]}"
         fi
     done
     
@@ -1001,6 +1015,9 @@ case "$ACTION" in
         ;;
     sync-secrets)
         sync_secrets
+        ;;
+    list-secrets)
+        list_secret_vars
         ;;
     *)
         show_profiles
