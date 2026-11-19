@@ -5,6 +5,8 @@ api:
 
 providers:
   docker:
+    # Accès à l'API Docker via le proxy en lecture seule (service socket-proxy)
+    endpoint: "tcp://socket-proxy:2375"
     exposedByDefault: false
   file:
     filename: /etc/traefik/dynamic.yml

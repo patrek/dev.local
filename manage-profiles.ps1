@@ -352,6 +352,21 @@ function Generate-DockerCompose {
 name: $namespace
 
 services:
+  # Proxy du socket Docker : seul conteneur qui monte le socket.
+  # Traefik et Dozzle passent par lui et n'ont accès qu'à des requêtes de lecture
+  # (conteneurs, événements, infos) ; aucune requête d'écriture n'est acceptée.
+  socket-proxy:
+    image: tecnativa/docker-socket-proxy:v0.5.0
+    container_name: "${namespace}_socket_proxy"
+    environment:
+      - CONTAINERS=1  # liste, logs et stats des conteneurs (Traefik, Dozzle)
+      - INFO=1        # requis par Dozzle pour se connecter
+      - POST=0        # refuse toute requête d'écriture
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - socket-proxy
+
   # Reverse Proxy Traefik
   traefik:
     image: traefik:v3.6.4
@@ -362,11 +377,13 @@ services:
     extra_hosts:
       - "external-ip:host-gateway"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
       - ./traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro
     networks:
       - traefik-network
+      - socket-proxy
+    depends_on:
+      - socket-proxy
     healthcheck:
       test: ["CMD", "traefik", "healthcheck"]
       interval: 10s
@@ -387,12 +404,14 @@ services:
       - "127.0.0.1:${dozzlePort}:8080"
     environment:
       - DOZZLE_TIMEOUT=15s
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - DOCKER_HOST=tcp://socket-proxy:2375
     extra_hosts:
       - "external-ip:host-gateway"
     networks:
       - traefik-network
+      - socket-proxy
+    depends_on:
+      - socket-proxy
     healthcheck:
       test: ["CMD", "/dozzle", "healthcheck"]
       interval: 3s
@@ -522,6 +541,11 @@ $dockerComposeContent
 networks:
   traefik-network:
     driver: bridge
+  # Réseau interne réservé à socket-proxy, Traefik et Dozzle :
+  # les services des profils ne peuvent pas joindre l'API Docker
+  socket-proxy:
+    driver: bridge
+    internal: true
 "@
     
     $compose | Out-File -FilePath $DockerComposeFile -Encoding UTF8

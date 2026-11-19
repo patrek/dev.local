@@ -1112,6 +1112,8 @@ chmod +x *.sh
 - ✅ `.gitignore` configuré pour exclure les secrets en clair
 - ✅ Validation automatique de la configuration SOPS
 - ✅ Aucun secret en dur dans les fichiers versionnés
+- ✅ Traefik et Dozzle publiés uniquement sur `127.0.0.1`
+- ✅ Socket Docker isolé : seul le service `socket-proxy` le monte ; Traefik et Dozzle passent par lui en lecture seule, sur un réseau interne inaccessible aux services des profils
 
 ## 🌍 Compatibilité Multiplateforme
 
