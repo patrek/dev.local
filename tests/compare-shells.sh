@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Teste les scripts PowerShell sur les fixtures, puis compare la génération de
 # manage-profiles.ps1 et sa détection des secrets à celles de manage-profiles.sh.
 #

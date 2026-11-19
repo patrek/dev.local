@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Script de validation des profils Dev.Local 2.0
 # Valide la syntaxe YAML, les champs requis et les valeurs des profils
 

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Menu interactif pour Dev.Local 2.0
 # Interface simple pour gérer services et profils
 

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Gestionnaire de profils pour Dev.Local 2.0
 # Script pour ajouter, modifier, supprimer et lister des profils de services
 # Génère automatiquement docker-compose.yml et la configuration Traefik

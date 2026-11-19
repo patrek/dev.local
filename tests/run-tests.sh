@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Tests des scripts Bash de Dev.Local
 #
 # Usage :

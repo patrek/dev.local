@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # YQ_MODE est lu par les scripts qui sourcent ce fichier (ex: validate-profiles.sh)
 # shellcheck disable=SC2034
 # Fournit la commande `yq` (mikefarah v4+) aux scripts Dev.Local.
@@ -11,6 +11,13 @@
 #   - les fichiers passés à yq doivent être des chemins relatifs à la racine
 #     (montée en lecture seule dans le conteneur) ;
 #   - yq ne lit pas l'entrée standard.
+
+# mapfile et les tableaux associatifs demandent bash 4+ (macOS fournit bash 3.2 : brew install bash)
+if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
+    echo "bash 4 ou plus récent est requis (version actuelle : ${BASH_VERSION:-inconnue})." >&2
+    echo "Sur macOS : brew install bash" >&2
+    exit 1
+fi
 
 YQ_IMAGE="${YQ_IMAGE:-mikefarah/yq:4.50.1}"
 YQ_MODE=""
