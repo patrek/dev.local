@@ -332,8 +332,8 @@ services:
     image: traefik:v3.6.4
     container_name: "${namespace}_traefik"
     ports:
-      - "8080:80"
-      - "8081:8080"
+      - "127.0.0.1:8080:80"
+      - "127.0.0.1:8081:8080"
     extra_hosts:
       - "external-ip:host-gateway"
     volumes:
@@ -359,7 +359,7 @@ services:
     image: amir20/dozzle:latest
     container_name: "${namespace}_dozzle"
     ports:
-      - "${dozzlePort}:8080"
+      - "127.0.0.1:${dozzlePort}:8080"
     environment:
       - DOZZLE_TIMEOUT=15s
     volumes:

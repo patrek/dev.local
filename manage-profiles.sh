@@ -578,8 +578,8 @@ services:
     image: traefik:v3.6.4
     container_name: ${COMPOSE_PROJECT_NAME:-devlocal}_traefik
     ports:
-      - "8080:80"
-      - "8081:8080"
+      - "127.0.0.1:8080:80"
+      - "127.0.0.1:8081:8080"
     extra_hosts:
       - "external-ip:host-gateway"
     volumes:
@@ -604,7 +604,7 @@ EOF
     image: amir20/dozzle:latest
     container_name: ${COMPOSE_PROJECT_NAME:-devlocal}_dozzle
     ports:
-      - "$DOZZLE_PORT:8080"
+      - "127.0.0.1:$DOZZLE_PORT:8080"
     environment:
       - DOZZLE_TIMEOUT=15s
       - DOZZLE_BASE=/logs

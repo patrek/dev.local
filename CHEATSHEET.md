@@ -425,8 +425,8 @@ dozzle_enabled: false
 # docker-compose.yml (après génération, éditer manuellement)
 traefik:
   ports:
-    - "8080:80"    # HTTP
-    - "8081:8080"  # Dashboard
+    - "127.0.0.1:8080:80"    # HTTP
+    - "127.0.0.1:8081:8080"  # Dashboard
 ```
 
 ## 📖 Documentation Complète
