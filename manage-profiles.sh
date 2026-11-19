@@ -849,21 +849,23 @@ sync_secrets() {
                     fi
                 fi
             done < "$profile"
-        fi
-        
-        # Méthode 2 (fallback) : Scanner les ${VAR:-default}
-        while IFS= read -r match; do
-            local var_name
-            var_name=$(echo "$match" | sed 's/.*\${\([A-Z_][A-Z0-9_]*\).*/\1/')
-            local default_value
-            default_value=$(echo "$match" | sed 's/.*:-\([^}]*\)}.*/\1/')
-            [ -z "$default_value" ] && default_value="changeme"
+        else
+            # Méthode 2 (fallback, profil sans section secrets:) : variables ${VAR:-defaut}
+            # des entrées de docker-compose.environment uniquement.
+            # L'image, les ports et les commentaires ne sont pas des secrets.
+            while IFS= read -r match; do
+                local var_name
+                var_name=$(echo "$match" | sed 's/.*\${\([A-Z_][A-Z0-9_]*\).*/\1/')
+                local default_value
+                default_value=$(echo "$match" | sed 's/.*:-\([^}]*\)}.*/\1/')
+                [ -z "$default_value" ] && default_value="changeme"
             
-            if [ -n "$var_name" ] && [ -z "${secret_vars[$var_name]}" ]; then
-                secret_vars["$var_name"]="$default_value"
-                echo -e "  \033[90m📌 [$profile_name] $var_name (auto-détecté)\033[0m"
-            fi
-        done < <(grep -o '\${[A-Z_][A-Z0-9_]*:-[^}]*}' "$profile" 2>/dev/null || true)
+                if [ -n "$var_name" ] && [ -z "${secret_vars[$var_name]}" ]; then
+                    secret_vars["$var_name"]="$default_value"
+                    echo -e "  \033[90m📌 [$profile_name] $var_name (auto-détecté)\033[0m"
+                fi
+            done < <(yq e '.docker-compose.environment[]' "$profile" 2>/dev/null | grep -o '\${[A-Z_][A-Z0-9_]*:-[^}]*}' || true)
+        fi
     done
     
     if [ ${#secret_vars[@]} -eq 0 ]; then
