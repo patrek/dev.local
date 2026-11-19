@@ -86,7 +86,7 @@ Sans installation locale, les scripts Bash exécutent `yq` via Docker : l'image 
 
 **Linux (binaire officiel) :**
 ```bash
-sudo wget -q -O /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64"
+sudo wget -q -O /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/v4.50.1/yq_linux_amd64"
 sudo chmod +x /usr/local/bin/yq
 ```
 

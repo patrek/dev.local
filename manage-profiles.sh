@@ -474,7 +474,7 @@ EOF
         cat >> "$DOCKER_COMPOSE_FILE" << EOF
   # Monitoring des logs
   dozzle:
-    image: amir20/dozzle:latest
+    image: amir20/dozzle:v11.5.0
     container_name: ${NAMESPACE}_dozzle
     ports:
       - "127.0.0.1:$DOZZLE_PORT:8080"

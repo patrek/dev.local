@@ -398,7 +398,7 @@ services:
         $compose += @"
   # Monitoring des logs
   dozzle:
-    image: amir20/dozzle:latest
+    image: amir20/dozzle:v11.5.0
     container_name: "${namespace}_dozzle"
     ports:
       - "127.0.0.1:${dozzlePort}:8080"
