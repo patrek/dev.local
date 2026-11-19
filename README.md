@@ -58,7 +58,7 @@ Un système modulaire et générique pour gérer des services Docker avec profil
 - AWS CLI (pour utiliser AWS KMS avec SOPS)
 - Just command runner (recommandé pour faciliter l'utilisation)
 - Age (alternative à AWS KMS pour SOPS)
-- yq (optionnel mais recommandé) — utilitaire YAML pour parser correctement les profils lors de la génération. Le script `manage-profiles.sh` utilise `yq` quand il est disponible, sinon il retombe sur une implémentation sed/grep.
+- yq v4+ (mikefarah) — optionnel : les scripts Bash l'utilisent pour lire les profils et `config.yml`. S'il n'est pas installé, ils l'exécutent automatiquement depuis son image Docker (`mikefarah/yq`), plus lentement.
 
 ### Installation de SOPS
 
@@ -82,7 +82,7 @@ brew install sops
 
 ### (Optionnel) Installation de yq (recommandé)
 
-Si vous voulez que la génération des fichiers soit la plus robuste possible (parsing YAML fiable), installez `yq` (mikefarah) :
+Sans installation locale, les scripts Bash exécutent `yq` via Docker : l'image est téléchargée au premier lancement (connexion requise) et chaque lecture YAML démarre un conteneur. Pour une génération plus rapide et utilisable hors ligne, installez `yq` (mikefarah) :
 
 **Linux (binaire officiel) :**
 ```bash
@@ -95,7 +95,7 @@ sudo chmod +x /usr/local/bin/yq
 brew install yq
 ```
 
-Une fois `yq` installé, `manage-profiles.sh` l'utilisera automatiquement.
+Une fois `yq` installé, les scripts l'utiliseront automatiquement à la place de l'image Docker. La version de l'image peut être changée avec la variable `YQ_IMAGE` (voir `lib/yq.sh`).
 
 ### Configuration initiale
 
@@ -155,9 +155,9 @@ just generate
 just start
 ```
 
-### Note : génération des fichiers (yq préféré, fallback présent)
+### Note : génération des fichiers (yq local ou via Docker)
 
-- Le script Bash `./manage-profiles.sh` privilégie `yq` lorsqu'il est installé pour parser correctement les fichiers YAML (profils et `config.yml`). Si `yq` n'est pas présent, un parsing basé sur sed/grep est utilisé en fallback.
+- Les scripts Bash lisent toujours les fichiers YAML (profils et `config.yml`) avec `yq` : la version installée localement si elle existe, sinon l'image Docker `mikefarah/yq`. Le comportement est identique dans les deux cas.
 
 - Commandes pour (re)générer les fichiers :
 

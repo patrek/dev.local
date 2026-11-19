@@ -4,6 +4,8 @@
 
 # Note: set -e retiré car il empêche la gestion gracieuse des erreurs de SOPS
 
+cd "$(dirname "${BASH_SOURCE[0]}")" || exit 1
+
 COMMAND="start"
 PROFILES=""
 SERVICE=""
@@ -32,6 +34,24 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# Lire l'URL d'un registre dans config.yml (ex: get_registry_url ecr <défaut>)
+# yq est chargé dans un sous-shell : s'il est indisponible, on garde la valeur par défaut
+get_registry_url() {
+    local registry="$1"
+    local default="$2"
+    local url=""
+
+    if [ -f "config.yml" ]; then
+        url=$(source "lib/yq.sh" && yq e ".registries.${registry}.url" "config.yml" 2>/dev/null)
+    fi
+
+    if [ -z "$url" ] || [ "$url" = "null" ]; then
+        echo "$default"
+    else
+        echo "$url"
+    fi
+}
 
 # Valider Docker Compose
 validate_docker_compose() {
@@ -280,15 +300,8 @@ connect_ecr_login() {
     fi
 
     # Lire l'URL ECR depuis config.yml
-    local config_path="$(dirname "$0")/config.yml"
-    local ecr_url="<id>.dkr.ecr.ca-central-1.amazonaws.com"  # Valeur par défaut
-
-    if [ -f "$config_path" ] && command -v yq &> /dev/null; then
-        local url=$(yq eval '.registries.ecr.url' "$config_path" 2>/dev/null)
-        if [ -n "$url" ] && [ "$url" != "null" ]; then
-            ecr_url="$url"
-        fi
-    fi
+    local ecr_url
+    ecr_url=$(get_registry_url ecr "<id>.dkr.ecr.ca-central-1.amazonaws.com")
 
     echo -e "\033[96m🐳 Connexion Docker à AWS ECR...\033[0m"
 
@@ -318,15 +331,8 @@ connect_ecr_login() {
 # Docker JFrog Login
 connect_jfrog_login() {
     # Lire l'URL JFrog depuis config.yml
-    local config_path="$(dirname "$0")/config.yml"
-    local jfrog_url="custom.jfrog.io"  # Valeur par défaut
-    
-    if [ -f "$config_path" ] && command -v yq &> /dev/null; then
-        local url=$(yq eval '.registries.jfrog.url' "$config_path" 2>/dev/null)
-        if [ -n "$url" ] && [ "$url" != "null" ]; then
-            jfrog_url="$url"
-        fi
-    fi
+    local jfrog_url
+    jfrog_url=$(get_registry_url jfrog "custom.jfrog.io")
     
     echo -e "\033[96m🐳 Connexion Docker à JFrog...\033[0m"
     echo -e "\033[93mUtilisez: docker login $jfrog_url\033[0m"

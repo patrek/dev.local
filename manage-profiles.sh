@@ -5,6 +5,8 @@
 
 set -e
 
+cd "$(dirname "${BASH_SOURCE[0]}")"
+
 ACTION="${1:-list}"
 PROFILES_DIR="profiles"
 DOCKER_COMPOSE_FILE="docker-compose.yml"
@@ -17,37 +19,33 @@ DOZZLE_ENABLED=true
 DOZZLE_PORT=9999
 NAMESPACE="default"
 
-# Détection robuste de yq (mikefarah v4+)
-YQ_CMD=""
-detect_yq() {
-    # Vérifier si yq est installé
-    if ! command -v yq >/dev/null 2>&1; then
-        return 1
-    fi
+# yq local ou via Docker (voir lib/yq.sh)
+source "lib/yq.sh"
 
-    # Vérifier qu'il s'agit de mikefarah/yq (pas kislyuk/yq)
-    # mikefarah/yq a une commande 'eval' ou 'e', kislyuk n'en a pas
-    if yq --help 2>&1 | grep -q "eval"; then
-        # Vérifier la version (v4+)
-        local version
-        version=$(yq --version 2>&1 | grep -oP 'version [v]?\K[0-9]+' | head -1)
-        if [ -n "$version" ] && [ "$version" -ge 4 ]; then
-            YQ_CMD="yq"
-            return 0
-        fi
-    fi
+# Configuration des variables partagées (chargée par load_config)
+SHARED_ENV_ENABLED=true
+SHARED_ENV_EXCLUDED=()
 
-    # Si ce n'est pas mikefarah v4+, ne pas utiliser yq
-    return 1
+# Retourne $1, ou $2 si $1 est vide ou "null" (champ YAML absent)
+# Ne pas utiliser l'opérateur yq '//' pour cela : il remplace aussi 'false'
+value_or_default() {
+    if [ -z "$1" ] || [ "$1" = "null" ]; then
+        echo "$2"
+    else
+        echo "$1"
+    fi
 }
 
-# Activer yq si disponible et compatible
-if detect_yq; then
-    echo -e "\033[92m✓ yq (mikefarah v4+) détecté - parsing YAML robuste activé\033[0m" >&2
-else
-    echo -e "\033[93m⚠ yq non disponible ou version incompatible - utilisation du fallback sed/grep\033[0m" >&2
-    echo -e "\033[93m  Installez yq v4+ pour un parsing plus fiable: https://github.com/mikefarah/yq\033[0m" >&2
-fi
+# Lit plusieurs champs scalaires d'un fichier YAML en un seul appel yq.
+# Usage : read_yaml_fields <fichier> <chemin>...
+# Résultat dans le tableau YAML_FIELDS (même ordre que les chemins, "null" si absent).
+read_yaml_fields() {
+    local file="$1"
+    shift
+    local expr
+    expr=$(IFS=,; echo "$*")
+    mapfile -t YAML_FIELDS < <(yq e "$expr" "$file" 2>/dev/null)
+}
 
 # Extraire le nom de la clé YAML d'une ligne (ex: "  image: nginx" -> "image")
 # Usage: key_from_line "  image: nginx"
@@ -144,27 +142,15 @@ normalize_block() {
                 [ -n "$k" ] && result="${result}${prefix}${k}: ${v}"$'\n'
             done <<< "$block"
         else
-            if [ -n "$YQ_CMD" ]; then
-                local stripped
-                stripped=$(echo "$block" | sed 's/^[[:space:]]*//')
-                local normalized
-                normalized=$(echo "$stripped" | $YQ_CMD 'to_entries | .[] | .key + "=" + (.value | tostring)' 2>/dev/null)
-                if [ -n "$normalized" ]; then
-                    while IFS= read -r item; do
-                        [ -n "$item" ] && result="${result}${prefix}- ${item}"$'\n'
-                    done <<< "$normalized"
-                fi
-            else
-                while IFS= read -r item; do
-                    item=$(clean_yaml_item "$item" false false)
-                    [ -z "$item" ] && continue
-                    local k v
-                    k=$(echo "$item" | cut -d: -f1)
-                    v=$(echo "$item" | cut -d: -f2- | sed -E 's/^[[:space:]]+//')
-                    v=$(clean_yaml_item "$v" false true)
-                    [ -n "$k" ] && result="${result}${prefix}- ${k}=${v}"$'\n'
-                done <<< "$block"
-            fi
+            while IFS= read -r item; do
+                item=$(clean_yaml_item "$item" false false)
+                [ -z "$item" ] && continue
+                local k v
+                k=$(echo "$item" | cut -d: -f1)
+                v=$(echo "$item" | cut -d: -f2- | sed -E 's/^[[:space:]]+//')
+                v=$(clean_yaml_item "$v" false true)
+                [ -n "$k" ] && result="${result}${prefix}- ${k}=${v}"$'\n'
+            done <<< "$block"
         fi
     elif [ "$is_list_raw" = true ]; then
         while IFS= read -r item; do
@@ -178,195 +164,36 @@ normalize_block() {
 
 # Charger la configuration
 load_config() {
-    if [ -f "$CONFIG_FILE" ]; then
-        if [ -n "$YQ_CMD" ]; then
-            # Using yq for robust parsing
-            DOZZLE_ENABLED=$(yq e '.dozzle_enabled // true' "$CONFIG_FILE" 2>/dev/null)
-            DOZZLE_PORT=$(yq e '.dozzle_port // 9999' "$CONFIG_FILE" 2>/dev/null)
-            NAMESPACE=$(yq e '.namespace // "devlocal"' "$CONFIG_FILE" 2>/dev/null)
-        else
-            if grep -q "dozzle_enabled: false" "$CONFIG_FILE" 2>/dev/null; then
-                DOZZLE_ENABLED=false
-            fi
-            # Extraire seulement le nombre du port (ignorer le commentaire #)
-            local port
-            port=$(grep "dozzle_port:" "$CONFIG_FILE" 2>/dev/null | sed 's/.*dozzle_port: *//; s/ *#.*//' | tr -d '\r')
-            if [ -n "$port" ]; then
-                DOZZLE_PORT=$port
-            fi
+    [ -f "$CONFIG_FILE" ] || return 0
 
-            # Extraire la valeur namespace si presente
-            local ns_line
-            ns_line=$(grep -E '^[[:space:]]*namespace:' "$CONFIG_FILE" 2>/dev/null | head -n1 || true)
-            if [ -n "$ns_line" ]; then
-                NAMESPACE=$(echo "$ns_line" | sed -E 's/^[[:space:]]*namespace:[[:space:]]*//; s/"//g; s/[[:space:]]+#.*//' | tr -d '\r')
-                if [ -z "$NAMESPACE" ]; then
-                    NAMESPACE="devlocal"
-                fi
-            fi
-        fi
-    fi
+    read_yaml_fields "$CONFIG_FILE" .dozzle_enabled .dozzle_port .namespace .shared_env_config.enabled
+    DOZZLE_ENABLED=$(value_or_default "${YAML_FIELDS[0]}" true)
+    DOZZLE_PORT=$(value_or_default "${YAML_FIELDS[1]}" 9999)
+    NAMESPACE=$(value_or_default "${YAML_FIELDS[2]}" devlocal)
+    SHARED_ENV_ENABLED=$(value_or_default "${YAML_FIELDS[3]}" true)
+
+    mapfile -t SHARED_ENV_EXCLUDED < <(yq e '.shared_env_config.exclude_services[]' "$CONFIG_FILE" 2>/dev/null)
 }
 
 # Fonction pour charger les variables d'environnement partagées
+# Nécessite load_config. Retourne une variable par ligne : les groupes auto_inject,
+# puis les groupes service_specific du service. Rien si le service est exclu.
 get_shared_env_vars() {
     local service_name="$1"
-    local shared_vars=""
 
-    [ ! -f "$CONFIG_FILE" ] && echo "" && return
+    [ -f "$CONFIG_FILE" ] || return 0
+    [ "$SHARED_ENV_ENABLED" = "false" ] && return 0
 
-    if [ -n "$YQ_CMD" ]; then
-        # yq-based implementation
-        local enabled
-        enabled=$(yq e '.shared_env_config.enabled // true' "$CONFIG_FILE" 2>/dev/null)
-        [ "$enabled" = "false" ] && echo "" && return
-
-        # auto_inject groups
-        local groups
-        groups=$(yq e '.shared_env_config.auto_inject[]? // []' "$CONFIG_FILE" 2>/dev/null || true)
-
-        # service specific groups
-        if [ -n "$service_name" ]; then
-            local svc_groups
-            svc_groups=$(yq e ".shared_env_config.service_specific.${service_name}[]? // []" "$CONFIG_FILE" 2>/dev/null || true)
-            if [ -n "$svc_groups" ]; then
-                groups="$groups\n$svc_groups"
-            fi
-        fi
-
-        # iterate groups and collect variables
-        while IFS= read -r grp; do
-            [ -z "$grp" ] && continue
-            # for each group, get the list under shared_env.<group>
-            while IFS= read -r v; do
-                # Filtrer les valeurs vides et la chaîne littérale "[]"
-                [ -n "$v" ] && [ "$v" != "[]" ] && shared_vars="$shared_vars$v"$'\n'
-            done < <(yq e ".shared_env.${grp}[]? // []" "$CONFIG_FILE" 2>/dev/null || true)
-        done <<< "$groups"
-
-        echo "$shared_vars"
-        return
-    fi
-
-    # Fallback: original grep/sed implementation
-    local enabled
-    enabled=$(grep -A 10 "^shared_env_config:" "$CONFIG_FILE" | grep "enabled:" | sed 's/.*enabled: *//; s/ *#.*//' | tr -d '\r' | head -1)
-    [ "$enabled" = "false" ] && echo "" && return
-
-    # Récupérer les groupes auto_inject
-    local auto_inject_groups=""
-    local in_auto_inject=false
-    while IFS= read -r line; do
-        if echo "$line" | grep -q "^  auto_inject:"; then
-            in_auto_inject=true
-            continue
-        fi
-        if [ "$in_auto_inject" = true ]; then
-            if echo "$line" | grep -q "^    - "; then
-                local group
-                group=$(echo "$line" | sed -E 's/^[[:space:]]*-[[:space:]]*//; s/[[:space:]]+#.*//; s/[[:space:]]+$//' | tr -d '\r')
-                auto_inject_groups="${auto_inject_groups} ${group}"
-            else
-                break
-            fi
-        fi
-    done < "$CONFIG_FILE"
-
-    # Vérifier si le service est exclu
-    if [ -n "$service_name" ]; then
-        local in_exclude=false
-        while IFS= read -r line; do
-            if echo "$line" | grep -q "^  exclude_services:"; then
-                in_exclude=true
-                continue
-            fi
-            if [ "$in_exclude" = true ]; then
-                if echo "$line" | grep -q "^    - "; then
-                    local excluded_service
-                    excluded_service=$(echo "$line" | sed -E 's/^[[:space:]]*-[[:space:]]*//; s/[[:space:]]+#.*//; s/[[:space:]]+$//' | tr -d '\r')
-                    if [ "$excluded_service" = "$service_name" ]; then
-                        echo ""
-                        return
-                    fi
-                else
-                    break
-                fi
-            fi
-        done < "$CONFIG_FILE"
-    fi
-
-    # Récupérer les groupes service_specific pour ce service
-    local service_groups=""
-    if [ -n "$service_name" ]; then
-        local in_service_specific=false
-        local in_current_service=false
-        while IFS= read -r line; do
-            if echo "$line" | grep -q "^  service_specific:"; then
-                in_service_specific=true
-                continue
-            fi
-            if [ "$in_service_specific" = true ]; then
-                if echo "$line" | grep -q "^    ${service_name}:"; then
-                    in_current_service=true
-                    continue
-                fi
-                if [ "$in_current_service" = true ]; then
-                    if echo "$line" | grep -q "^      - "; then
-                        local group
-                        group=$(echo "$line" | sed -E 's/^[[:space:]]*-[[:space:]]*//; s/[[:space:]]+#.*//; s/[[:space:]]+$//' | tr -d '\r')
-                        service_groups="${service_groups} ${group}"
-                    else
-                        in_current_service=false
-                        if [ "$(echo "$line" | grep -c "^    [a-z]")" -eq 0 ]; then
-                            break
-                        fi
-                    fi
-                fi
-            fi
-        done < "$CONFIG_FILE"
-    fi
-
-    # Combiner tous les groupes
-    local all_groups
-    all_groups="${auto_inject_groups} ${service_groups}"
-
-    # Extraire les variables de chaque groupe
-    for group in $all_groups; do
-        [ -z "$group" ] && continue
-
-        local in_shared_env=false
-        local in_group=false
-        while IFS= read -r line; do
-            if echo "$line" | grep -q "^shared_env:"; then
-                in_shared_env=true
-                continue
-            fi
-            if [ "$in_shared_env" = true ]; then
-                if echo "$line" | grep -q "^  ${group}:"; then
-                    in_group=true
-                    continue
-                fi
-                if [ "$in_group" = true ]; then
-                    if echo "$line" | grep -q "^    - "; then
-                        local var
-                        # Fix: strip only the YAML list marker, preserve hyphens in values
-                        var=$(echo "$line" | sed -E 's/^[[:space:]]*-[[:space:]]*//; s/[[:space:]]+#.*//; s/[[:space:]]+$//' | tr -d '\r')
-                        shared_vars="${shared_vars}${var}"$'\n'
-                    elif echo "$line" | grep -qE "^[[:space:]]+#"; then
-                        # Skip comment lines within the list (at list item indentation or deeper)
-                        continue
-                    else
-                        in_group=false
-                        if [ "$(echo "$line" | grep -c "^  [a-z]")" -eq 0 ]; then
-                            break
-                        fi
-                    fi
-                fi
-            fi
-        done < "$CONFIG_FILE"
+    local excluded
+    for excluded in "${SHARED_ENV_EXCLUDED[@]}"; do
+        [ "$excluded" = "$service_name" ] && return 0
     done
 
-    echo "$shared_vars"
+    yq e ".shared_env as \$env
+        | ((.shared_env_config.auto_inject // []) + (.shared_env_config.service_specific[\"$service_name\"] // []))
+        | .[] as \$group
+        | \$env[\$group]
+        | .[]" "$CONFIG_FILE" 2>/dev/null || true
 }
 
 # Fonction pour lister les profils
@@ -383,12 +210,14 @@ show_profiles() {
         [ -f "$profile" ] || continue
         local basename
         basename=$(basename "$profile")
+        # description en dernier : seule sa première ligne est lue si elle est multi-ligne
+        read_yaml_fields "$profile" .name .enabled .description
         local name
-        name=$(grep -m1 "^name:" "$profile" | sed 's/name: *//; s/ *#.*//' | tr -d '\r' || echo "${basename%.yml}")
+        name=$(value_or_default "${YAML_FIELDS[0]}" "${basename%.yml}")
         local enabled
-        enabled=$(grep -m1 "^enabled:" "$profile" | sed 's/enabled: *//; s/ *#.*//' | tr -d '\r' || echo "true")
+        enabled=$(value_or_default "${YAML_FIELDS[1]}" true)
         local description
-        description=$(grep -m1 '^description:' "$profile" | sed -E 's/description: *"//; s/"$//; s/[[:space:]]+#.*//' | tr -d '\r' || echo "Sans description")
+        description=$(value_or_default "${YAML_FIELDS[2]}" "Sans description")
 
         if [ "$enabled" = "true" ]; then
             echo -e "  \033[97m$name\033[0m - \033[92m✅ Activé\033[0m"
@@ -626,15 +455,21 @@ EOF
     for profile in "$PROFILES_DIR"/*.yml; do
         [ -f "$profile" ] || continue
         
+        read_yaml_fields "$profile" .enabled .name .always_active .docker_profile
         local enabled
-        enabled=$(grep -m1 "^enabled:" "$profile" | sed 's/enabled: *//; s/ *#.*//' | tr -d '\r' || echo "true")
+        enabled=$(value_or_default "${YAML_FIELDS[0]}" true)
         if [ "$enabled" != "true" ]; then
             echo -e "  \033[90m⏭️  Ignoré (désactivé) : $(basename "$profile" .yml)\033[0m"
             continue
         fi
-        
+
         local name
-        name=$(grep -m1 "^name:" "$profile" | sed 's/name: *//; s/ *#.*//' | tr -d '\r' || basename "$profile" .yml)
+        name=$(value_or_default "${YAML_FIELDS[1]}" "$(basename "$profile" .yml)")
+        local always_active
+        always_active=$(value_or_default "${YAML_FIELDS[2]}" false)
+        # Chaîne vide si docker_profile est absent ou null
+        local docker_profile
+        docker_profile=$(value_or_default "${YAML_FIELDS[3]}" "")
         echo -e "  \033[92m✅ Ajout : $(basename "$profile" .yml)\033[0m"
 
         # Charger les variables partagées pour ce service
@@ -644,17 +479,6 @@ EOF
         if [ -n "$shared_env_vars" ]; then
             shared_count=$(echo "$shared_env_vars" | grep -c "^" || echo 0)
             echo -e "    \033[90m📌 $shared_count variable(s) partagée(s)\033[0m"
-        fi
-
-        local always_active
-        always_active=$(grep -m1 "^always_active:" "$profile" | sed 's/always_active: *//; s/ *#.*//' | tr -d '\r' || echo "true")
-        local docker_profile_raw
-        docker_profile_raw=$(grep -m1 "^docker_profile:" "$profile" | sed 's/docker_profile: *//; s/ *#.*//' | tr -d '\r')
-        # Considérer null, vide, ou whitespace comme absence de profil
-        local docker_profile
-        docker_profile=$(echo "$docker_profile_raw" | xargs)  # trim whitespace
-        if [ "$docker_profile" = "null" ] || [ -z "$docker_profile" ]; then
-            docker_profile=""
         fi
 
         # Extraire la section docker-compose:
@@ -788,55 +612,32 @@ generate_traefik_dynamic() {
     for profile in "$PROFILES_DIR"/*.yml; do
         [ -f "$profile" ] || continue
 
-        # Parse avec yq si disponible, sinon fallback grep/sed
+        read_yaml_fields "$profile" .enabled .traefik.enabled .name \
+            .traefik.local_port .traefik.docker_port .traefik.health_path \
+            .traefik.prefix .traefik.strip_prefix .traefik.priority
+
         local enabled
+        enabled=$(value_or_default "${YAML_FIELDS[0]}" true)
         local traefik_enabled
-        local name
-        local local_port
-        local docker_port
-        local health_path
-        local prefix
-        local strip_prefix
-        local priority
-
-        if [ -n "$YQ_CMD" ]; then
-            # Parsing avec yq (mikefarah v4+)
-            enabled=$(yq e '.enabled // true' "$profile" 2>/dev/null)
-            traefik_enabled=$(yq e '.traefik.enabled // false' "$profile" 2>/dev/null)
-
-            if [ "$enabled" != "true" ] || [ "$traefik_enabled" != "true" ]; then
-                continue
-            fi
-
-            name=$(yq e '.name' "$profile" 2>/dev/null)
-            [ "$name" = "null" ] || [ -z "$name" ] && name=$(basename "$profile" .yml)
-
-            local_port=$(yq e '.traefik.local_port // 80' "$profile" 2>/dev/null)
-            docker_port=$(yq e '.traefik.docker_port // 80' "$profile" 2>/dev/null)
-            health_path=$(yq e '.traefik.health_path // "/health"' "$profile" 2>/dev/null)
-            prefix=$(yq e ".traefik.prefix // \"/$name\"" "$profile" 2>/dev/null)
-            strip_prefix=$(yq e '.traefik.strip_prefix // false' "$profile" 2>/dev/null)
-            priority=$(yq e '.traefik.priority // 10' "$profile" 2>/dev/null)
-        else
-            # Fallback: parsing avec grep/sed
-            enabled=$(grep -m1 "^enabled:" "$profile" | sed 's/enabled: *//; s/ *#.*//' | tr -d '\r' || echo "true")
-            traefik_enabled=$(grep -A 10 "^traefik:" "$profile" | grep "enabled:" | head -1 | sed 's/.*enabled: *//; s/ *#.*//' | tr -d '\r' || echo "false")
-
-            if [ "$enabled" != "true" ] || [ "$traefik_enabled" != "true" ]; then
-                continue
-            fi
-
-            name=$(grep -m1 "^name:" "$profile" | sed 's/name: *//; s/ *#.*//' | tr -d '\r')
-            [ -z "$name" ] && name=$(basename "$profile" .yml)
-
-            local_port=$(grep -A 10 "^traefik:" "$profile" | grep "local_port:" | head -1 | sed 's/.*local_port: *//; s/ *#.*//' | tr -d '\r' || echo "80")
-            docker_port=$(grep -A 10 "^traefik:" "$profile" | grep "docker_port:" | head -1 | sed 's/.*docker_port: *//; s/ *#.*//' | tr -d '\r' || echo "80")
-            health_path=$(grep -A 10 "^traefik:" "$profile" | grep "health_path:" | head -1 | sed 's/.*health_path: *//; s/ *#.*//' | tr -d '\r' || echo "/health")
-            prefix=$(grep -A 10 "^traefik:" "$profile" | grep "prefix:" | head -1 | sed 's/.*prefix: *//; s/ *#.*//' | tr -d '\r')
-            [ -z "$prefix" ] && prefix="/$name"
-            strip_prefix=$(grep -A 10 "^traefik:" "$profile" | grep "strip_prefix:" | head -1 | sed 's/.*strip_prefix: *//; s/ *#.*//' | tr -d '\r' || echo "false")
-            priority=$(grep -A 10 "^traefik:" "$profile" | grep "priority:" | head -1 | sed 's/.*priority: *//; s/ *#.*//' | tr -d '\r' || echo "10")
+        traefik_enabled=$(value_or_default "${YAML_FIELDS[1]}" false)
+        if [ "$enabled" != "true" ] || [ "$traefik_enabled" != "true" ]; then
+            continue
         fi
+
+        local name
+        name=$(value_or_default "${YAML_FIELDS[2]}" "$(basename "$profile" .yml)")
+        local local_port
+        local_port=$(value_or_default "${YAML_FIELDS[3]}" 80)
+        local docker_port
+        docker_port=$(value_or_default "${YAML_FIELDS[4]}" 80)
+        local health_path
+        health_path=$(value_or_default "${YAML_FIELDS[5]}" /health)
+        local prefix
+        prefix=$(value_or_default "${YAML_FIELDS[6]}" "/$name")
+        local strip_prefix
+        strip_prefix=$(value_or_default "${YAML_FIELDS[7]}" false)
+        local priority
+        priority=$(value_or_default "${YAML_FIELDS[8]}" 10)
 
         # --- Middleware ---
         local middleware_ref=""
@@ -937,12 +738,13 @@ sync_secrets() {
     for profile in "$PROFILES_DIR"/*.yml; do
         [ -f "$profile" ] || continue
         
+        read_yaml_fields "$profile" .enabled .name
         local enabled
-        enabled=$(grep -m1 "^enabled:" "$profile" | sed 's/enabled: *//; s/ *#.*//' | tr -d '\r' || echo "true")
+        enabled=$(value_or_default "${YAML_FIELDS[0]}" true)
         [ "$enabled" != "true" ] && continue
-        
+
         local profile_name
-        profile_name=$(grep -m1 "^name:" "$profile" | sed 's/name: *//; s/ *#.*//' | tr -d '\r' || basename "$profile" .yml)
+        profile_name=$(value_or_default "${YAML_FIELDS[1]}" "$(basename "$profile" .yml)")
 
         # Méthode 1 : Lire la section secrets:
         if grep -q "^secrets:" "$profile"; then

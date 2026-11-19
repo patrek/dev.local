@@ -4,12 +4,10 @@
 
 set -e
 
-# Vérifier la présence de yq
-if ! command -v yq &> /dev/null; then
-    echo -e "\033[91mErreur: 'yq' n'est pas installé. Ce script nécessite yq pour parser les fichiers YAML.\033[0m"
-    echo -e "Installez-le avec: sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 && sudo chmod +x /usr/local/bin/yq"
-    exit 1
-fi
+cd "$(dirname "${BASH_SOURCE[0]}")"
+
+# yq local ou via Docker (voir lib/yq.sh)
+source "lib/yq.sh"
 
 wait_key() {
     echo -e "\n\033[90m[Appuyez sur n'importe quelle touche pour continuer...]\033[0m"
