@@ -1,4 +1,6 @@
 #!/bin/bash
+# YQ_MODE est lu par les scripts qui sourcent ce fichier (ex: validate-profiles.sh)
+# shellcheck disable=SC2034
 # Fournit la commande `yq` (mikefarah v4+) aux scripts Dev.Local.
 #
 # Si yq n'est pas installé localement, il est exécuté depuis son image Docker

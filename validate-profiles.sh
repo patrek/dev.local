@@ -14,11 +14,10 @@ RED='\033[91m'
 YELLOW='\033[93m'
 GREEN='\033[92m'
 CYAN='\033[96m'
-GRAY='\033[90m'
 RESET='\033[0m'
 
 # yq local ou via Docker (voir lib/yq.sh)
-cd "$(dirname "${BASH_SOURCE[0]}")"
+cd "$(dirname "${BASH_SOURCE[0]}")" || exit 1
 source "lib/yq.sh"
 
 # Champs lus dans chaque profil, en un seul appel yq par fichier

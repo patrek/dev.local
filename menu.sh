@@ -80,7 +80,6 @@ EOF
     fi
     
     # Init arrays
-    names=()
     docker_profiles=()
     i=1
     
@@ -102,7 +101,6 @@ EOF
         
         if [ "$enabled" != "false" ]; then
             echo -e "  \033[96m[$i]\033[0m \033[92m✅ $name\033[0m"
-            names[i]="$name"
             docker_profiles[i]="$docker_profile"
             ((i++))
         else
