@@ -463,6 +463,13 @@ services:
                 }
             }
             
+            # environment en map (CLE: valeur) : converti en liste CLE=valeur, comme manage-profiles.sh,
+            # pour pouvoir y ajouter les variables partagées
+            if ($composeData.environment -is [System.Collections.IDictionary]) {
+                $composeData.environment = @($composeData.environment.GetEnumerator() |
+                        Sort-Object Key | ForEach-Object { "$($_.Key)=$($_.Value)" })
+            }
+
             # Préparer l'injection des variables partagées sans polluer les données YAML (pas de faux entries)
             $hadEnvBefore = $false
             if ($composeData.Contains('environment') -and $composeData.environment) {
@@ -482,16 +489,19 @@ services:
                 $inserted = $false
                 for ($i = 0; $i -lt $yamlLines.Count; $i++) {
                     $line = $yamlLines[$i]
-                    $newYamlLines.Add($line)
 
-                    if (-not $inserted -and $line -match '^(\s*)environment:\s*$') {
+                    # "environment: []" est la clé vide créée plus haut pour un service sans variables
+                    if (-not $inserted -and $line -match '^(\s*)environment:\s*(\[\])?\s*$') {
                         $envIndent = $matches[1]
-                        # Trouver indentation des items; sinon fallback à envIndent + deux espaces
+                        $newYamlLines.Add("${envIndent}environment:")
+
+                        # Reprendre l'indentation des items existants ; elle peut être vide,
+                        # car ConvertTo-Yaml aligne les items de liste sur leur clé
                         $itemIndent = $null
                         if ($i + 1 -lt $yamlLines.Count -and $yamlLines[$i + 1] -match '^(\s*)-\s') {
                             $itemIndent = $matches[1]
                         }
-                        if (-not $itemIndent) { $itemIndent = "$envIndent  " }
+                        if ($null -eq $itemIndent) { $itemIndent = "$envIndent  " }
 
                         # Insérer le bloc partagé puis un séparateur pour le service (si des vars existent côté service)
                         $newYamlLines.Add("$itemIndent# Variables partagées (depuis config.yml)")
@@ -503,6 +513,9 @@ services:
                         }
 
                         $inserted = $true
+                    }
+                    else {
+                        $newYamlLines.Add($line)
                     }
                 }
                 $yamlLines = $newYamlLines
@@ -680,6 +693,11 @@ http:
       priority: 10
 "@
         }
+    }
+
+    # Middlewares section (définitions référencées par les routers avec strip_prefix)
+    if ($middlewaresStr.Trim().Length -gt 0) {
+        $dynamic += "`n`n  middlewares:$middlewaresStr"
     }
 
     # Services section
