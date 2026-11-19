@@ -788,42 +788,19 @@ detect_secret_vars() {
         local profile_name
         profile_name=$(value_or_default "${YAML_FIELDS[1]}" "$(basename "$profile" .yml)")
 
-        # Méthode 1 : Lire la section secrets:
+        # Méthode 1 : section secrets: (même vide, elle désactive l'auto-détection)
         if grep -q "^secrets:" "$profile"; then
-            local in_secrets=false
-            while IFS= read -r line; do
-                if echo "$line" | grep -q "^secrets:"; then
-                    in_secrets=true
-                    continue
+            # Un secret par ligne : nom, valeur par défaut, description (séparateur US, \x1f)
+            local sep=$'\x1f'
+            local secret_name secret_default secret_desc
+            while IFS="$sep" read -r secret_name secret_default secret_desc; do
+                [ -z "$secret_default" ] && secret_default="changeme"
+
+                if [ -n "$secret_name" ] && [ -z "${SECRET_VARS[$secret_name]}" ]; then
+                    SECRET_VARS["$secret_name"]="$secret_default"
+                    echo -e "  \033[90m📌 [$profile_name] $secret_name ($secret_desc)\033[0m"
                 fi
-                if [ "$in_secrets" = true ]; then
-                    if echo "$line" | grep -q "^  - name:"; then
-                        local secret_name
-                        secret_name=$(echo "$line" | sed 's/.*name: *//; s/ *#.*//' | tr -d '\r')
-                        local secret_desc=""
-                        local secret_default="changeme"
-                        
-                        # Lire les lignes suivantes pour description et default
-                        while IFS= read -r next_line; do
-                            if echo "$next_line" | grep -q "^    description:"; then
-                                secret_desc=$(echo "$next_line" | sed -E 's/.*description: *"//; s/"$//; s/[[:space:]]+#.*//' | tr -d '\r')
-                            elif echo "$next_line" | grep -q "^    default:"; then
-                                secret_default=$(echo "$next_line" | sed 's/.*default: *//; s/ *#.*//' | tr -d '\r')
-                                break
-                            elif echo "$next_line" | grep -qE "^(  -|[a-z])"; then
-                                break
-                            fi
-                        done
-                        
-                        if [ -n "$secret_name" ] && [ -z "${SECRET_VARS[$secret_name]}" ]; then
-                            SECRET_VARS["$secret_name"]="$secret_default"
-                            echo -e "  \033[90m📌 [$profile_name] $secret_name ($secret_desc)\033[0m"
-                        fi
-                    elif echo "$line" | grep -qE "^[a-z]"; then
-                        break
-                    fi
-                fi
-            done < "$profile"
+            done < <(yq e ".secrets[] | [.name // \"\", .default // \"\", .description // \"\"] | join(\"$sep\")" "$profile" 2>/dev/null || true)
         else
             # Méthode 2 (fallback, profil sans section secrets:) : variables ${VAR:-defaut}
             # des entrées de docker-compose.environment uniquement.
