@@ -119,6 +119,15 @@ get_value() {
     fi
 }
 
+# Vrai si la valeur est un numéro de port (1 à 65535).
+# Le nombre de chiffres est borné avant la comparaison : au-delà de 64 bits,
+# [ -gt ] échoue et laisserait passer la valeur.
+is_valid_port() {
+    [[ "$1" =~ ^0*([0-9]{1,5})$ ]] || return 1
+    local port=$((10#${BASH_REMATCH[1]}))
+    [ "$port" -ge 1 ] && [ "$port" -le 65535 ]
+}
+
 # Validation 1: Syntaxe YAML
 validate_yaml_syntax() {
     local profile="$1"
@@ -232,14 +241,14 @@ validate_values() {
 
             local docker_port
             docker_port=$(get_value "$profile" ".traefik.docker_port" "80")
-            if ! [[ "$docker_port" =~ ^[0-9]+$ ]] || [ "$docker_port" -lt 1 ] || [ "$docker_port" -gt 65535 ]; then
+            if ! is_valid_port "$docker_port"; then
                 error "$basename" "traefik.docker_port doit être entre 1 et 65535 (trouvé: '$docker_port')"
                 has_errors=1
             fi
 
             local local_port
             local_port=$(get_value "$profile" ".traefik.local_port" "80")
-            if ! [[ "$local_port" =~ ^[0-9]+$ ]] || [ "$local_port" -lt 1 ] || [ "$local_port" -gt 65535 ]; then
+            if ! is_valid_port "$local_port"; then
                 error "$basename" "traefik.local_port doit être entre 1 et 65535 (trouvé: '$local_port')"
                 has_errors=1
             fi
