@@ -182,10 +182,10 @@ while true; do
                 is_enabled="${YAML_FIELDS[1]}"
                 if [ "$is_enabled" = "false" ]; then continue; fi
 
-                # Vérifier si toujours actif (défaut: true)
+                # Vérifier si toujours actif (défaut: false, comme manage-profiles.sh)
                 always_active="${YAML_FIELDS[2]}"
 
-                if [ "$always_active" = "false" ]; then
+                if [ "$always_active" != "true" ]; then
                     p_name="${YAML_FIELDS[3]}"
 
                     if [ -n "$p_name" ] && [ "$p_name" != "null" ]; then
