@@ -1,0 +1,40 @@
+# Exemple de profil « outil » : gulp / npm exécutés dans Docker, sans Node.js sur le poste
+#
+# Ce fichier est désactivé (enabled: false) : il n'est ni généré ni démarré tel quel.
+# Pour l'utiliser :
+#   cp profiles/gulp.example.yml profiles/gulp.yml
+#   - dans profiles/gulp.yml, passer enabled à true
+#   - définir GULP_SRC dans .env (ou adapter le volume ci-dessous)
+#   just generate
+#   just run gulp npm install
+#   just run gulp npx gulp build
+#
+# Voir README.md, « Exemple 4 bis : Outils de build dans Docker ».
+
+name: gulp
+description: "Outils front (gulp) exécutés dans Docker"
+enabled: false
+always_active: false
+# Profil Docker dédié : le service n'est jamais démarré par `just start`,
+# seulement par `just run gulp ...` ou `just start-profile tools`
+docker_profile: tools
+# Aucun port publié : `just run` ne publie de toute façon pas les ports du service
+expose_ports: false
+
+docker-compose:
+  image: node:22-alpine
+  container_name: gulp
+  # Utilisateur courant : les fichiers créés n'appartiennent pas à root (Linux)
+  # HOST_UID et HOST_GID sont exportés par launch.sh
+  user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+  working_dir: /app
+  volumes:
+    - ${GULP_SRC:-../mon-projet}:/app   # chemin relatif à dev.local, ou variable dans .env
+  environment:
+    - HOME=/tmp            # cache npm accessible en écriture pour un utilisateur non root
+  # Pour un service longue durée (watch, serveur de dev), ajouter une commande et,
+  # avec expose_ports: true, une section ports (voir README.md) :
+  # command: npx gulp watch
+
+traefik:
+  enabled: false

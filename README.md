@@ -938,6 +938,8 @@ Un nom de volume compte au moins deux caractères et ne peut pas être une varia
 ### Exemple 4 bis : Outils de build dans Docker (gulp, npm, ...)
 
 Un profil peut servir d'outil : aucun Node.js n'est requis sur le poste.
+Un exemple prêt à copier est fourni dans `profiles/gulp.example.yml` (désactivé par défaut, sans port publié) :
+copiez-le en `profiles/gulp.yml` et passez `enabled` à `true`. La variante ci-dessous publie en plus le port du serveur de dev.
 
 ```yaml
 # profiles/gulp.yml
