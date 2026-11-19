@@ -42,6 +42,19 @@ ps:
 logs service="":
     {{launch}} logs {{service}}
 
+[unix]
+[doc("Exécuter une commande ponctuelle dans un service (ex: just run gulp npx gulp build)")]
+[group("docker")]
+[positional-arguments]
+run service *args:
+    ./launch.sh run "$@"
+
+[windows]
+[doc("Exécuter une commande ponctuelle dans un service (ex: just run gulp npx gulp build)")]
+[group("docker")]
+run service *args:
+    .\launch.ps1 run {{service}} -- {{args}}
+
 # Profils
 
 [doc("Lister les profile dev.local")]

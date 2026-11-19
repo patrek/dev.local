@@ -9,7 +9,11 @@
     Profils à démarrer (séparés par virgules)
 
 .PARAMETER c
-    Commande : start, stop, recreate, ps, sso, id, ecr-login, jfrog-login, edit-secrets
+    Commande : start, stop, recreate, ps, run, sso, id, ecr-login, jfrog-login, edit-secrets
+
+.PARAMETER runArgs
+    Pour la commande run : la commande à exécuter dans le conteneur, après le nom du service.
+    Placer "--" avant les arguments qui commencent par un tiret.
 
 .EXAMPLE
     .\launch.ps1
@@ -22,6 +26,10 @@
 .EXAMPLE
     .\launch.ps1 -c edit-secrets
     Édite les secrets avec SOPS
+
+.EXAMPLE
+    .\launch.ps1 run gulp -- npx gulp build --production
+    Exécute une commande ponctuelle dans le service gulp
 #>
 
 param(
@@ -29,12 +37,15 @@ param(
     [string]$SelectedProfiles,
 
     [Parameter(Position = 0)]
-    [ValidateSet('up', 'start', 'stop', 'down', 'recreate', 'ps', 'logs', 'sso', 'id', 'ecr-login', 'jfrog-login', 'edit-secrets', 'view-secrets')]
+    [ValidateSet('up', 'start', 'stop', 'down', 'recreate', 'ps', 'logs', 'run', 'sso', 'id', 'ecr-login', 'jfrog-login', 'edit-secrets', 'view-secrets')]
     [string]$Command = 'start',
 
     [Parameter(Position = 1)]
     [Alias("s", "service")]
-    [string]$ServiceItem
+    [string]$ServiceItem,
+
+    [Parameter(ValueFromRemainingArguments = $true)]
+    [string[]]$runArgs
 )
 
 $PSDefaultParameterValues['*:Encoding'] = 'UTF8'
@@ -208,16 +219,40 @@ function View-Secrets {
     & sops -d secrets.env | Out-Host -Paging
 }
 
-# Démarrer les services
-function Start-Services {
-    param([string]$profiles)
-    
-    # Vérifier que docker-compose.yml existe
+# Générer docker-compose.yml s'il n'existe pas encore
+function Ensure-ComposeFile {
     if (-not (Test-Path "docker-compose.yml")) {
         Write-Warning "docker-compose.yml non trouvé. Génération..."
         & .\manage-profiles.ps1 -Action generate
     }
-    
+}
+
+# Exécuter une commande ponctuelle dans un service (ex: run gulp npx gulp build)
+function Invoke-RunCommand {
+    param(
+        [string]$service,
+        [string[]]$arguments
+    )
+
+    if ([string]::IsNullOrWhiteSpace($service)) {
+        Write-Error "Service requis. Usage: .\launch.ps1 run <service> [commande...]"
+        exit 1
+    }
+
+    Ensure-ComposeFile
+    Load-Secrets
+
+    # --profile "*" : le service est utilisable même si son profil Docker n'est pas démarré
+    docker compose --profile "*" run --rm $service @arguments
+    exit $LASTEXITCODE
+}
+
+# Démarrer les services
+function Start-Services {
+    param([string]$profiles)
+
+    Ensure-ComposeFile
+
     Load-Secrets
     
     if ($profiles) {
@@ -373,6 +408,7 @@ switch ($Command) {
     'recreate' { Recreate-Services }
     'ps' { List-Containers }
     'logs' { Show-Logs -service $ServiceItem }
+    'run' { Invoke-RunCommand -service $ServiceItem -arguments $runArgs }
     'sso' { Connect-AwsSso }
     'id' { Show-AwsIdentity }
     'ecr-login' { Connect-EcrLogin }

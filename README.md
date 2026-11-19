@@ -236,6 +236,9 @@ just start-profile example,emp
 just logs
 just logs example
 
+# Exécuter une commande ponctuelle dans un service (outils : gulp, npm, ...)
+just run gulp npx gulp build
+
 # Arrêter les services
 just stop
 
@@ -771,6 +774,7 @@ Modifier `traefik/traefik.yml` pour :
 | Statut | `just ps` | `.\launch.ps1 ps` | `./launch.sh ps` |
 | Logs tous | `just logs` | `.\launch.ps1 logs` | `./launch.sh logs` |
 | Logs service | `just logs api` | `.\launch.ps1 logs -service api` | `./launch.sh logs api` |
+| Commande ponctuelle | `just run gulp npx gulp build` | `.\launch.ps1 run gulp -- npx gulp build` | `./launch.sh run gulp npx gulp build` |
 | Nettoyer | `just clean` | `docker compose down -v` | `docker compose down -v` |
 
 #### 📋 Profils de services
@@ -922,6 +926,52 @@ docker-compose:
     - NODE_ENV=development
   command: npm run dev
 ```
+
+### Exemple 4 bis : Outils de build dans Docker (gulp, npm, ...)
+
+Un profil peut servir d'outil : aucun Node.js n'est requis sur le poste.
+
+```yaml
+# profiles/gulp.yml
+name: gulp
+description: "Outils front (gulp) exécutés dans Docker"
+enabled: true
+always_active: false
+docker_profile: tools      # démarré seulement sur demande
+expose_ports: true         # publie le port du serveur de dev sur 127.0.0.1
+
+docker-compose:
+  image: node:22-alpine
+  container_name: gulp
+  # Utilisateur courant : les fichiers créés n'appartiennent pas à root (Linux)
+  user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+  working_dir: /app
+  volumes:
+    - ${GULP_SRC:-../mon-projet}:/app   # chemin relatif à dev.local, ou variable dans .env
+  environment:
+    - HOME=/tmp            # cache npm accessible en écriture pour un utilisateur non root
+  ports:
+    - "3000:3000"
+  command: npx gulp watch  # commande du service longue durée
+
+traefik:
+  enabled: false
+```
+
+```bash
+just generate
+
+# Commandes ponctuelles : conteneur créé puis supprimé, secrets SOPS chargés
+just run gulp npm install
+just run gulp npx gulp build
+
+# Service longue durée (watch) avec le port 3000 publié
+just start-profile tools
+```
+
+- `HOST_UID` et `HOST_GID` sont exportés par `launch.sh`.
+- `run` ne publie pas les ports du service ; utilisez le profil démarré pour un serveur de dev.
+- Sous PowerShell, placez `--` avant la commande : `.\launch.ps1 run gulp -- npx gulp build --production`.
 
 ### Exemple 5 : Service avec dépendances
 

@@ -9,6 +9,12 @@ cd "$(dirname "${BASH_SOURCE[0]}")" || exit 1
 COMMAND="start"
 PROFILES=""
 SERVICE=""
+RUN_ARGS=()
+
+# Permet aux profils d'exécuter les conteneurs avec l'utilisateur courant
+# (user: "${HOST_UID:-1000}:${HOST_GID:-1000}") pour ne pas créer de fichiers root
+export HOST_UID="${HOST_UID:-$(id -u)}"
+export HOST_GID="${HOST_GID:-$(id -g)}"
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -20,6 +26,15 @@ while [[ $# -gt 0 ]]; do
         -s|--service)
             SERVICE="$2"
             shift 2
+            ;;
+        run)
+            # run <service> [commande...] : tout ce qui suit est passé tel quel au conteneur
+            COMMAND="run"
+            shift
+            SERVICE="${1:-}"
+            [ $# -gt 0 ] && shift
+            RUN_ARGS=("$@")
+            break
             ;;
         up|start|stop|down|recreate|ps|logs|sso|id|ecr-login|jfrog-login|edit-secrets|view-secrets)
             COMMAND="$1"
@@ -205,14 +220,34 @@ view_secrets() {
     sops -d secrets.env | less -S
 }
 
-# Démarrer les services
-start_services() {
-    # Vérifier que docker-compose.yml existe
+# Générer docker-compose.yml s'il n'existe pas encore
+ensure_compose_file() {
     if [ ! -f "docker-compose.yml" ]; then
         echo -e "\033[93mdocker-compose.yml non trouvé. Génération...\033[0m"
         ./manage-profiles.sh generate
     fi
-    
+}
+
+# Exécuter une commande ponctuelle dans un service (ex: run gulp npx gulp build)
+# Les messages vont sur stderr pour que stdout ne contienne que la sortie de la commande
+run_command() {
+    if [ -z "$SERVICE" ]; then
+        echo -e "\033[91mService requis\033[0m" >&2
+        echo "Usage: $0 run <service> [commande...]" >&2
+        return 1
+    fi
+
+    ensure_compose_file >&2
+    load_secrets >&2
+
+    # --profile "*" : le service est utilisable même si son profil Docker n'est pas démarré
+    docker compose --profile "*" run --rm "$SERVICE" "${RUN_ARGS[@]}"
+}
+
+# Démarrer les services
+start_services() {
+    ensure_compose_file
+
     load_secrets
     
     if [ -n "$PROFILES" ]; then
@@ -359,6 +394,9 @@ case "$COMMAND" in
     logs)
         show_logs
         ;;
+    run)
+        run_command
+        ;;
     sso)
         connect_aws_sso
         ;;
@@ -381,6 +419,7 @@ case "$COMMAND" in
         echo -e "\033[91mCommande inconnue: $COMMAND\033[0m"
         echo "Usage: $0 [start|stop|recreate|ps|sso|id|ecr-login|edit-secrets|view-secrets]"
         echo "       $0 --profile <profils> start"
+        echo "       $0 run <service> [commande...]"
         exit 1
         ;;
 esac
