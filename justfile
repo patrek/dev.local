@@ -49,11 +49,16 @@ logs service="":
 run service *args:
     ./launch.sh run "$@"
 
+# Recette en script : chaque argument arrive tel quel dans $args. Les paramètres nommés
+# empêchent PowerShell d'interpréter un argument comme "-p" ou "-c" destiné au conteneur.
 [windows]
 [doc("Exécuter une commande ponctuelle dans un service (ex: just run gulp npx gulp build)")]
 [group("docker")]
+[positional-arguments]
 run service *args:
-    .\launch.ps1 run {{quote(service)}} -- {{args}}
+    #!pwsh.exe
+    .\launch.ps1 -Command run -ServiceItem $args[0] -runArgs @($args | Select-Object -Skip 1)
+    exit $LASTEXITCODE
 
 # Profils
 
