@@ -68,6 +68,14 @@ for generated in docker-compose.yml traefik/dynamic.yml; do
         exit 1
     fi
 done
+# Les fichiers générés n'ont que des fins de ligne LF, comme ceux de manage-profiles.sh
+for generated in docker-compose.yml traefik/dynamic.yml; do
+    if grep -q $'\r' "$ps_dir/$generated"; then
+        echo "ECHEC : $generated généré par PowerShell contient des fins de ligne CRLF"
+        exit 1
+    fi
+done
+echo "  ok    fichiers générés par PowerShell en LF"
 if ! (cd "$ps_dir" && docker compose config --quiet); then
     echo "ECHEC : le docker-compose.yml généré par PowerShell est refusé par docker compose"
     exit 1

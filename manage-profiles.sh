@@ -17,7 +17,7 @@ CONFIG_FILE="config.yml"
 # Configuration par défaut
 DOZZLE_ENABLED=true
 DOZZLE_PORT=9999
-NAMESPACE="default"
+NAMESPACE="devlocal"
 
 # yq local ou via Docker (voir lib/yq.sh)
 source "lib/yq.sh"

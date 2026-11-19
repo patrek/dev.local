@@ -1,0 +1,12 @@
+# always_active absent : false par défaut, le service dépend de son profil Docker
+name: no-always-active
+description: "Sans always_active"
+enabled: true
+docker_profile: optional
+
+docker-compose:
+  image: nginx:alpine
+  container_name: no-always-active
+
+traefik:
+  enabled: false

@@ -431,7 +431,7 @@ Les profils sont des fichiers YAML dans le dossier `profiles/`. `profiles/exampl
 name: mon-service
 description: "Description du service"
 enabled: true                 # false : le profil est ignoré à la génération
-always_active: false          # true : démarré par `just start`, sans profil Docker
+always_active: false          # true : démarré par `just start`, sans profil Docker (défaut : false)
 docker_profile: mon-service   # profil Docker du service (requis si always_active: false)
 expose_ports: false           # true pour publier la section ports (voir ci-dessous)
 

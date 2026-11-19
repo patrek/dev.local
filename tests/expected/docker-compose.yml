@@ -101,6 +101,27 @@ services:
     networks:
       - traefik-network
 
+  # Service: env-map-mixed
+  env-map-mixed:
+    image: nginx:alpine
+    container_name: env-map-mixed
+    environment:
+      # Variables partagées (depuis config.yml)
+      - LOG_LEVEL=info
+      - TZ=America/Toronto
+      - API_GATEWAY_URL=https://api.example.com
+      # Variables exclusives du service
+      - ZONE=last-letter-first
+      - node_env=dev
+      - S3_BUCKET=assets
+      - DEBUG=true
+      - VERBOSE=false
+      - APP_PORT=8080
+    extra_hosts:
+      - "external-ip:host-gateway"
+    networks:
+      - traefik-network
+
   # Service: excluded
   excluded:
     image: nginx:alpine
@@ -144,6 +165,22 @@ services:
       - "external-ip:host-gateway"
     networks:
       - traefik-network
+
+  # Service: no-always-active
+  no-always-active:
+    image: nginx:alpine
+    container_name: no-always-active
+    environment:
+      # Variables partagées (depuis config.yml)
+      - LOG_LEVEL=info
+      - TZ=America/Toronto
+      - API_GATEWAY_URL=https://api.example.com
+    extra_hosts:
+      - "external-ip:host-gateway"
+    networks:
+      - traefik-network
+    profiles:
+      - optional
 
   # Service: plain
   plain:
@@ -255,9 +292,9 @@ services:
       - TZ=America/Toronto
       - API_GATEWAY_URL=https://api.example.com
       # Variables exclusives du service
+      - MAP_TOKEN=${MAP_TOKEN:-changeme}
       - MAP_BARE=${MAP_BARE}
       - MAP_PLAIN=value
-      - MAP_TOKEN=${MAP_TOKEN:-changeme}
     extra_hosts:
       - "external-ip:host-gateway"
     networks:
