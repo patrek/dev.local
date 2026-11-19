@@ -2,6 +2,8 @@
 
 Un système modulaire et générique pour gérer des services Docker avec profils dynamiques et gestion sécurisée des secrets via SOPS.
 
+> **Rôle de ce document :** référence complète de Dev.Local (concepts, configuration, comportement). Pour un premier démarrage, suivez [QUICKSTART.md](QUICKSTART.md) ; pour retrouver une commande, ouvrez [CHEATSHEET.md](CHEATSHEET.md). Les autres guides sont listés dans [Documentation complète](#-documentation-complète).
+
 ## 📑 Table des matières
 
 - [💡 À quoi sert Dev.Local ?](#-à-quoi-sert-devlocal-)
@@ -10,15 +12,21 @@ Un système modulaire et générique pour gérer des services Docker avec profil
 - [📁 Structure du projet](#-structure-du-projet)
 - [🎮 Utilisation](#-utilisation)
 - [📝 Ajouter un nouveau service](#-ajouter-un-nouveau-service)
-- [📋 Format d'un profil](#-format-dun-profil)
 - [🔄 Variables d'environnement partagées](#-variables-denvironnement-partagées)
 - [🔐 Gestion des secrets avec SOPS](#-gestion-des-secrets-avec-sops)
+- [📋 Format d'un profil](#-format-dun-profil)
+- [🔧 Configuration avancée](#-configuration-avancée)
+- [🛠️ Scripts et commandes disponibles](#️-scripts-et-commandes-disponibles)
 - [📚 Exemples pratiques](#-exemples-pratiques)
+- [☁️ AWS et Docker Registry](#️-aws-et-docker-registry)
 - [🐧 Support Linux/macOS](#-support-linuxmacos)
-- [🔒 Sécurité](#-sécurité)
 - [📚 Documentation complète](#-documentation-complète)
+- [🔒 Sécurité](#-sécurité)
+- [🌍 Compatibilité Multiplateforme](#-compatibilité-multiplateforme)
 - [🔧 Développement](#-développement)
 - [🤝 Contribution](#-contribution)
+- [🔧 Dépannage](#-dépannage)
+- [🔧 Développeurs Windows : Permissions des fichiers .sh](#-développeurs-windows--permissions-des-fichiers-sh)
 - [📄 Licence](#-licence)
 
 ## 💡 À quoi sert Dev.Local ?
@@ -60,6 +68,8 @@ Un système modulaire et générique pour gérer des services Docker avec profil
 - Age (alternative à AWS KMS pour SOPS)
 - yq v4+ (mikefarah) — optionnel : les scripts Bash l'utilisent pour lire les profils et `config.yml`. S'il n'est pas installé, ils l'exécutent automatiquement depuis son image Docker (`mikefarah/yq`), plus lentement.
 
+Sous PowerShell, les fichiers YAML sont lus avec le module `powershell-yaml` : `manage-profiles.ps1` l'installe pour l'utilisateur courant s'il est absent.
+
 ### Installation de SOPS
 
 **Windows (Chocolatey) :**
@@ -95,92 +105,49 @@ sudo chmod +x /usr/local/bin/yq
 brew install yq
 ```
 
-Une fois `yq` installé, les scripts l'utiliseront automatiquement à la place de l'image Docker. La version de l'image peut être changée avec la variable `YQ_IMAGE` (voir `lib/yq.sh`).
+Une fois `yq` installé, les scripts l'utiliseront automatiquement à la place de l'image Docker ; le résultat est identique dans les deux cas. La version de l'image peut être changée avec la variable `YQ_IMAGE` (voir `lib/yq.sh`).
 
 ### Configuration initiale
 
-#### 1. Configurer SOPS
+Le parcours pas-à-pas (configurer SOPS, initialiser `secrets.env`, créer un premier profil, générer puis démarrer) est décrit dans [QUICKSTART.md](QUICKSTART.md). Chaque étape est détaillée ici :
 
-**Option A : Utiliser Age (recommandé pour débuter)**
+| Étape | Référence |
+|-------|-----------|
+| Configurer SOPS (Age ou AWS KMS) | [Configuration SOPS (.sops.yaml)](#configuration-sops-sopsyaml) |
+| Initialiser et éditer les secrets | [Gestion des secrets avec SOPS](#-gestion-des-secrets-avec-sops) |
+| Créer un profil de service | [Ajouter un nouveau service](#-ajouter-un-nouveau-service) |
+| Générer les fichiers | [Génération des fichiers](#génération-des-fichiers) |
+| Démarrer les services | [Utilisation](#-utilisation) |
 
-```powershell
-# Générer une clé Age
-age-keygen -o age-key.txt
+### Génération des fichiers
 
-# Copier la clé publique affichée (commence par "age1...")
-# Éditer .sops.yaml et remplacer la clé Age par la vôtre
-
-# Définir la clé privée
-$env:SOPS_AGE_KEY_FILE = "$(Get-Location)\age-key.txt"
-```
-
-**Option B : Utiliser AWS KMS**
-
-```powershell
-# Se connecter à AWS SSO
-.\launch.ps1 -c sso
-
-# Éditer .sops.yaml avec votre ARN KMS
-# kms: 'arn:aws:kms:REGION:ACCOUNT:key/KEY-ID'
-```
-
-#### 2. Initialiser le fichier de secrets
-
-```powershell
-# Créer et éditer secrets.env (chiffré automatiquement)
-.\manage-profiles.ps1 -Action init-secrets
-```
-
-#### 3. Créer votre premier profil de service
-
-```powershell
-# Via le menu interactif (recommandé pour débuter)
-.\menu.ps1
-
-# Ou en ligne de commande
-.\manage-profiles.ps1 -Action add
-```
-
-#### 4. Générer et démarrer
-
-```powershell
-# Générer docker-compose.yml
-.\manage-profiles.ps1 -Action generate
-
-# Démarrer tous les services
-.\launch.ps1
-
-# OU utiliser Just (si installé)
-just generate
-just start
-```
-
-### Note : génération des fichiers (yq local ou via Docker)
-
-- Les scripts Bash lisent toujours les fichiers YAML (profils et `config.yml`) avec `yq` : la version installée localement si elle existe, sinon l'image Docker `mikefarah/yq`. Le comportement est identique dans les deux cas.
-
-- Commandes pour (re)générer les fichiers :
-
-  - Sous Bash / Linux / macOS :
-  ```bash
-  ./manage-profiles.sh generate
-  ```
-
-  - Sous PowerShell / Windows :
-  ```powershell
-  .\manage-profiles.ps1 -Action generate
-  ```
-
-- Ce que le script génère maintenant :
-  - `docker-compose.yml` (généré) — contient désormais en en-tête la clé `name: <namespace>` prise depuis `config.yml` (clé `namespace`). Par défaut, si `config.yml` ne contient pas `namespace`, la valeur `devlocal` est utilisée.
-  - `traefik/dynamic.yml` (généré) — configuration dynamique des routers, services et middlewares pour Traefik.
-
-- Exemple rapide pour regénérer et vérifier :
+`docker-compose.yml` et `traefik/dynamic.yml` ne sont pas versionnés : ils sont générés à partir de `profiles/*.yml` et de `config.yml`. Ne les éditez pas à la main, vos modifications seraient écrasées à la génération suivante.
 
 ```bash
-./manage-profiles.sh generate
+just generate                             # toutes plateformes
+./manage-profiles.sh generate             # Bash
+.\manage-profiles.ps1 -Action generate    # PowerShell
+```
+
+Les scripts de lancement lancent eux-mêmes la génération si `docker-compose.yml` n'existe pas encore. Sous Bash, `generate` exécute d'abord `validate-profiles.sh` et s'arrête si un profil est invalide.
+
+Contenu de `docker-compose.yml` :
+
+- en en-tête, la clé `name: <namespace>` prise depuis `config.yml` (clé `namespace`, `devlocal` si elle est absente) ;
+- `socket-proxy` (`tecnativa/docker-socket-proxy:v0.5.0`) : seul conteneur qui monte le socket Docker, en lecture seule et sans requête d'écriture ;
+- `traefik` (`traefik:v3.6.4`), publié sur `127.0.0.1:8080` (HTTP) et `127.0.0.1:8081` (dashboard) ;
+- `dozzle` (`amir20/dozzle:v11.5.0`, version épinglée), publié sur `127.0.0.1:<dozzle_port>`, si `dozzle_enabled` vaut `true` ;
+- un service par profil activé (voir [Format d'un profil](#-format-dun-profil)) ;
+- une section `volumes:` de premier niveau déclarant les volumes nommés utilisés par les profils (voir [Exemple 4](#exemple-4--développement-avec-hot-reload)).
+
+`traefik/dynamic.yml` contient les routers, services et middlewares Traefik de chaque profil dont `traefik.enabled` vaut `true`, ainsi que la route `/logs` vers Dozzle.
+
+Pour vérifier le résultat :
+
+```bash
 sed -n '1,40p' docker-compose.yml        # vérifier l'en-tête et la clé `name:`
-sed -n '1,240p' traefik/dynamic.yml     # vérifier la config Traefik
+sed -n '1,240p' traefik/dynamic.yml      # vérifier la config Traefik
+just validate                            # docker compose config --quiet
 ```
 
 ### Vérification de l'installation
@@ -191,79 +158,63 @@ Après le démarrage, vérifiez que tout fonctionne :
 - **Dozzle (logs) :** http://localhost:9999/ ou http://localhost:8080/logs
 - **Vos services :** http://localhost:8080/[prefix-du-service]
 
-📚 **Guide détaillé :** Consultez [QUICKSTART.md](QUICKSTART.md) pour un tutoriel pas-à-pas complet.
+Ces ports ne sont ouverts que sur `127.0.0.1` : ils ne sont pas joignables depuis une autre machine du réseau.
 
 ## 📁 Structure du projet
 
 ```
 dev.local/
-├── profiles/               # Définitions des profils de services
-│   ├── example.yml        # Template de profil
-│   └── <nom-service>.yml  # Vos profils personnalisés
-├── traefik/               # Configuration Traefik
-│   ├── traefik.yml        # Config principale
-│   └── dynamic.yml        # Config dynamique (généré)
-├── docker-compose.yml     # Composition Docker (généré)
-├── config.yml             # Configuration globale (Dozzle, etc.)
-├── secrets.env            # Secrets chiffrés SOPS
-├── .sops.yaml            # Configuration SOPS
-├── menu.ps1              # Menu interactif
-├── launch.ps1            # Script principal
-├── manage-profiles.ps1   # Gestion des profils
-└── README.md             # Ce fichier
-
+├── profiles/                    # Définitions des profils de services
+│   ├── example.yml              # Modèle de profil commenté
+│   ├── gulp.example.yml         # Exemple de profil « outil » (gulp, npm)
+│   └── <nom-service>.yml        # Vos profils personnalisés
+├── traefik/
+│   ├── traefik.yml              # Config principale de Traefik
+│   └── dynamic.yml              # Routes (généré, non versionné)
+├── lib/
+│   └── yq.sh                    # yq local ou via Docker (scripts Bash)
+├── docs/                        # Guides thématiques
+├── tests/                       # Tests des scripts (fixtures, fichiers attendus)
+├── docker-compose.yml           # Composition Docker (généré, non versionné)
+├── config.yml                   # Configuration globale (Dozzle, registres, AWS, variables partagées)
+├── secrets.env                  # Secrets chiffrés SOPS (créé par init-secrets)
+├── secrets.env.example          # Modèle de secrets.env
+├── .sops.yaml                   # Configuration SOPS (à créer depuis .sops.example.yaml)
+├── .env.example                 # Modèle de .env (variables locales non sensibles)
+├── justfile                     # Recettes Just
+├── menu.ps1 / menu.sh                           # Menu interactif
+├── launch.ps1 / launch.sh                       # Cycle de vie des services, secrets, AWS
+├── manage-profiles.ps1 / manage-profiles.sh     # Profils, génération, secrets.env
+├── validate-profiles.ps1 / validate-profiles.sh # Validation des profils
+├── fix-sh-permissions.ps1                       # Bit exécutable des .sh (Windows)
+└── README.md                    # Ce fichier
 ```
 
 ## 🎮 Utilisation
 
-Dev.Local offre **trois façons** de gérer vos services Docker :
+Dev.Local offre **trois façons** de gérer vos services Docker. Elles appellent les mêmes scripts ; la liste complète des commandes, avec leurs équivalents Just, PowerShell et Bash, est dans [CHEATSHEET.md](CHEATSHEET.md).
 
 ### 1️⃣ Just (Recommandé - Multiplateforme)
 
 [Just](https://github.com/casey/just) est un command runner simple et multiplateforme qui fonctionne sur Windows, Linux et macOS.
 
 ```bash
-# Afficher toutes les commandes disponibles
-just --list
-
-# Démarrer tous les services
-just start
-
-# Démarrer avec profils spécifiques
-just start-profile example,emp
-
-# Voir les logs
-just logs
-just logs example
-
-# Exécuter une commande ponctuelle dans un service (outils : gulp, npm, ...)
-just run gulp npx gulp build
-
-# Arrêter les services
-just stop
-
-# Autres commandes utiles
-just ps              # Lister les containers
-just validate        # Valider la configuration
-just generate        # Régénérer docker-compose.yml
-just secrets-edit    # Éditer les secrets
-just aws-sso         # Connexion AWS
-just menu            # Lancer le menu interactif
-
-# Commandes AWS et Docker Registry
-just aws-sso         # Connexion AWS SSO
-just aws-id          # Afficher l'identité AWS
-just ecr-login       # Login Docker à AWS ECR
-just jfrog-login     # Login Docker à JFrog
-
-# Aliases courts
-just s               # start
-just st              # stop
-just r               # restart
-just p               # ps
-just g               # generate
-just v               # validate
+just --list                       # Afficher toutes les commandes disponibles
+just start                        # Démarrer les services toujours actifs
+just start-profile api,ui         # Démarrer en plus les profils Docker indiqués
+just logs api                     # Suivre les logs d'un service
+just run gulp npx gulp build      # Exécuter une commande ponctuelle dans un service
+just stop                         # Arrêter tous les services
+just clean                        # Supprimer containers et volumes de tous les profils
 ```
+
+À savoir :
+
+- `just start` exécute `docker compose up -d` sans profil : il démarre Traefik, Dozzle et les services dont le profil indique `always_active: true`. Les services rattachés à un profil Docker (`docker_profile`) ne démarrent qu'avec `just start-profile <profil1,profil2>` ou avec l'option 1 du menu, qui inclut tous les profils activés.
+- `just restart` arrête tous les services puis relance comme `just start`.
+- `just run <service> <commande...>` crée un conteneur ponctuel (`docker compose run --rm`), y charge les secrets SOPS, puis le supprime. Le service est utilisable même si son profil Docker n'est pas démarré, et ses ports ne sont pas publiés. Voir [Exemple 4 bis](#exemple-4-bis--outils-de-build-dans-docker-gulp-npm-).
+- `just clean` exécute `docker compose --profile "*" down -v --remove-orphans` : les volumes de tous les profils sont supprimés, y compris leurs données.
+- `just validate` vérifie le `docker-compose.yml` généré (`docker compose config --quiet`). La validation des profils eux-mêmes se fait avec `./validate-profiles.sh` ou `.\validate-profiles.ps1` (option 9 du menu).
 
 **Installation de Just :**
 - **Windows (Chocolatey):** `choco install just`
@@ -275,79 +226,33 @@ just v               # validate
 
 Le menu interactif offre une interface simple pour toutes les opérations :
 
-**Avec Just (toutes plateformes) :**
 ```bash
-just menu
+just menu      # toutes plateformes
+.\menu.ps1     # Windows (PowerShell)
+./menu.sh      # Linux/macOS (Bash)
 ```
 
-**Windows (PowerShell) :**
-```powershell
-.\menu.ps1
-```
-
-**Linux/macOS (Bash) :**
-```bash
-./menu.sh
-```
-
-Options disponibles :
-1. Démarrer tous les services
-2. Démarrer avec profils spécifiques
-3. Gérer les profils (ajouter/modifier/supprimer)
-4. Gérer les secrets SOPS
-5. Arrêter les services
+Il regroupe 17 options numérotées (plus `m` pour démarrer les services minimums, sans profil) en cinq catégories : services Docker, gestion des profils, secrets SOPS, AWS et Docker, documentation. Chaque option affiche la commande qu'elle exécute ; la correspondance complète est dans [CHEATSHEET.md](CHEATSHEET.md#-options-du-menu).
 
 ### 3️⃣ Ligne de commande directe
 
 **Windows (PowerShell) :**
 ```powershell
-# Démarrer tous les services
-.\launch.ps1
-
-# Démarrer avec profils spécifiques
-.\launch.ps1 -p service1,service2
-
-# Voir les logs
-.\launch.ps1 logs
-.\launch.ps1 logs -service example
-
-# Arrêter
-.\launch.ps1 stop
-
-# Autres commandes
-.\launch.ps1 ps              # Lister les containers
-.\launch.ps1 recreate        # Recréer les services
-.\launch.ps1 edit-secrets    # Éditer les secrets
-.\launch.ps1 view-secrets    # Voir les secrets déchiffrés
-.\launch.ps1 sso             # Connexion AWS SSO
-.\launch.ps1 id              # Afficher l'identité AWS
-.\launch.ps1 ecr-login       # Login Docker ECR
+.\launch.ps1                          # Démarrer les services toujours actifs
+.\launch.ps1 -p service1,service2     # Démarrer avec profils spécifiques
+.\launch.ps1 logs -service example    # Voir les logs d'un service
+.\launch.ps1 stop                     # Arrêter
 ```
 
 **Linux/macOS (Bash) :**
 ```bash
-# Démarrer tous les services
-./launch.sh start
-
-# Démarrer avec profils spécifiques
-./launch.sh --profile service1,service2 start
-
-# Voir les logs
-./launch.sh logs
-./launch.sh logs example
-
-# Arrêter
-./launch.sh stop
-
-# Autres commandes
-./launch.sh ps              # Lister les containers
-./launch.sh recreate        # Recréer les services
-./launch.sh edit-secrets    # Éditer les secrets
-./launch.sh view-secrets    # Voir les secrets déchiffrés
-./launch.sh sso             # Connexion AWS SSO
-./launch.sh id              # Afficher l'identité AWS
-./launch.sh ecr-login       # Login Docker ECR
+./launch.sh start                                # Démarrer les services toujours actifs
+./launch.sh --profile service1,service2 start    # Démarrer avec profils spécifiques
+./launch.sh logs example                         # Voir les logs d'un service
+./launch.sh stop                                 # Arrêter
 ```
+
+Sous PowerShell, la commande peut être passée en position (`.\launch.ps1 stop`) ou avec `-c` (`.\launch.ps1 -c stop`). Sous Bash, `./launch.sh` sans argument équivaut à `./launch.sh start`.
 
 ### Quelle méthode choisir ?
 
@@ -363,18 +268,7 @@ Options disponibles :
 
 #### Option 1 : Menu interactif (Recommandé pour débuter)
 
-```powershell
-# Windows
-.\menu.ps1
-
-# Linux/macOS
-./menu.sh
-
-# Avec Just
-just menu
-```
-
-Puis choisir : **"Ajouter un nouveau profil"**
+Lancez le menu (`just menu`, `.\menu.ps1` ou `./menu.sh`), puis choisissez l'option 6 : **"Ajouter un nouveau profil"**.
 
 #### Option 2 : Ligne de commande
 
@@ -386,31 +280,41 @@ Puis choisir : **"Ajouter un nouveau profil"**
 ./manage-profiles.sh add
 ```
 
+#### Option 3 : Copier un modèle
+
+Copiez `profiles/example.yml` (modèle commenté) ou `profiles/gulp.example.yml` (profil « outil ») vers `profiles/<nom-service>.yml`, adaptez-le, passez `enabled` à `true`, puis lancez `just generate`.
+
 Le script vous guidera étape par étape pour configurer :
 - ✅ Nom du service
 - ✅ Description
 - ✅ Image Docker (avec support de variables)
-- ✅ Ports (conteneur et hôte)
+- ✅ Ports (conteneur, service local, publication optionnelle sur l'hôte)
+- ✅ Activation : toujours actif ou rattaché à un profil Docker
+- ✅ Configuration Traefik (routing HTTP)
 - ✅ Variables d'environnement
 - ✅ Secrets requis (stockés dans secrets.env chiffré)
-- ✅ Configuration Traefik (routing HTTP)
-- ✅ Health checks
+
+Un health check Docker (`curl` sur `/health`) est ajouté automatiquement au profil créé.
 
 ### Exemple de création guidée
 
 ```
-Nom du service: mon-api
-Description: Mon API REST backend
-Image Docker: ${MON_API_IMAGE:-myregistry/api}:${MON_API_TAG:-latest}
-Port du service (conteneur): 8000
-Port hôte: 8001
-Activer Traefik ? (O/n): o
-Préfixe de route: /api
+Nom du service (ex: api-backend, frontend): mon-api
+Description du service: Mon API REST backend
+Image Docker (ex: nginx:latest, registry.io/myapp:v1.0): ${MON_API_IMAGE:-myregistry/api}:${MON_API_TAG:-latest}
+Port interne du conteneur (ex: 80, 8000): 8000
+Port exposé localement (via Traefik host) (ex: 8001): 8001
+Publier aussi un port sur l'hôte (hôte:conteneur, ex: 9000:8000, Entrée pour aucun):
+Service toujours actif (démarré par défaut) ? (O/n): o
+Activer Traefik ? (o/N): o
+Préfixe de route (ex: /api, /app): /api
 Supprimer le préfixe avant transmission ? (O/n): o
-Port du service pour Traefik: 8000
+Variable d'environnement:
+Nom du secret:
+Regénérer docker-compose.yml maintenant ? (O/n): o
 ```
 
-Le profil sera créé dans `profiles/mon-api.yml`.
+Le profil sera créé dans `profiles/mon-api.yml`. Les réponses correspondent aux champs décrits dans [Format d'un profil](#-format-dun-profil) : « Port interne du conteneur » devient `traefik.docker_port`, « Port exposé localement » devient `traefik.local_port`, et la publication d'un port sur l'hôte active `expose_ports`.
 
 ## 🔄 Variables d'environnement partagées
 
@@ -420,64 +324,75 @@ Dev.Local supporte l'injection automatique de variables d'environnement communes
 - 🔧 Configuration commune (log level, timezone, environnement)
 - 📊 Paramètres partagés entre microservices
 
-### Configuration dans `config.yml`
+Elles se déclarent dans `config.yml` : des groupes de variables sous `shared_env`, et les règles d'injection sous `shared_env_config` (`enabled`, `auto_inject`, `exclude_services`, `service_specific`). Elles sont injectées à la génération, et le script affiche le nombre de variables ajoutées à chaque service :
 
-```yaml
-# Variables d'environnement partagées
-shared_env:
-  # Variables globales pour tous les services
-  global:
-    - LOG_LEVEL=info
-    - NODE_ENV=development
-    - TZ=America/Toronto
-  
-  # Variables pour des services externes
-  external_services:
-    - API_GATEWAY_URL=https://api.example.com
-    - AUTH_SERVICE_URL=https://auth.example.com
-    - MESSAGING_SERVICE_URL=https://messaging.example.com
-
-# Configuration de l'injection
-shared_env_config:
-  enabled: true
-  auto_inject:
-    - global
-    - external_services
-  exclude_services: []  # Services à exclure
-```
-
-### Utilisation
-
-Les variables partagées sont automatiquement injectées lors de la génération :
-
-```powershell
-.\manage-profiles.ps1 -Action generate
-```
-
-Le script affichera le nombre de variables injectées pour chaque service :
 ```
 ✅ Ajout : mon-service
    📌 6 variable(s) partagée(s)
 ```
 
-**Note :** Les variables du profil ont priorité sur les variables partagées en cas de conflit.
+**Note :** Les variables du profil ont priorité sur les variables partagées en cas de conflit. Les secrets n'ont pas leur place ici : ils vont dans `secrets.env`.
 
-📚 **Documentation complète :** [docs/shared-env-guide.md](docs/shared-env-guide.md)
+- 📚 **Référence (clés, règles d'injection, FAQ) :** [docs/shared-env-guide.md](docs/shared-env-guide.md)
+- 🧪 **Exemples complets :** [docs/shared-env-examples.md](docs/shared-env-examples.md)
 
 ## 🔐 Gestion des secrets avec SOPS
 
-### Éditer les secrets
+Les secrets sont stockés dans `secrets.env`, chiffré par SOPS. Au démarrage (`start`, `recreate`, `run`), les scripts de lancement le déchiffrent et exportent chaque variable pour Docker Compose, ce qui résout les références `${VAR}` des profils. Si SOPS est absent, mal configuré ou si le déchiffrement échoue, un avertissement est affiché et les services démarrent sans secrets.
+
+### Configuration SOPS (.sops.yaml)
+
+`.sops.yaml` n'est pas fourni dans le dépôt : créez-le à partir du modèle, puis activez une méthode de chiffrement.
+
+```bash
+cp .sops.example.yaml .sops.yaml
+```
+
+```yaml
+creation_rules:
+  - path_regex: secrets\.env$
+    # Option 1 : AWS KMS
+    kms: 'arn:aws:kms:REGION:ACCOUNT:key/KEY-ID'
+
+    # Option 2 : Age
+    # age: 'age1...'
+```
+
+- **Age (recommandé pour débuter)** : génération de la clé et configuration dans [docs/sops_age_guide.md](docs/sops_age_guide.md).
+- **AWS KMS** : créez une clé KMS dans la console AWS (par exemple région `ca-central-1`, alias `dev-local-sops`), connectez-vous avec `just aws-sso` (voir [Configuration du profil AWS](#configuration-du-profil-aws)), puis renseignez l'ARN de la clé dans `kms:`. La clé optionnelle `aws_profile` indique à SOPS le profil AWS à utiliser :
+
+  ```yaml
+  creation_rules:
+    - path_regex: secrets\.env$
+      kms: 'arn:aws:kms:ca-central-1:123456789012:key/your-key-id'
+      aws_profile: <profil-aws>
+  ```
+
+Les scripts refusent d'éditer ou de déchiffrer tant qu'aucune ligne `kms:` ou `age:` n'est active (non commentée) dans `.sops.yaml`.
+
+### Initialiser le fichier de secrets
+
+```powershell
+.\manage-profiles.ps1 -Action init-secrets   # PowerShell
+./manage-profiles.sh init-secrets            # Bash
+```
+
+`init-secrets` exige que SOPS soit installé et que `.sops.yaml` existe. Il copie `secrets.env.example` vers `secrets.env`, le chiffre immédiatement (aucun `secrets.env` en clair ne reste sur disque ; en cas d'échec du chiffrement le fichier est supprimé), puis propose d'ouvrir l'éditeur SOPS.
+
+### Éditer et consulter les secrets
 
 ```powershell
 # Via SOPS directement
 sops secrets.env
 
-# Via le script
-.\launch.ps1 -c edit-secrets
+# Via les scripts
+just secrets-edit            # ou .\launch.ps1 -c edit-secrets, ./launch.sh edit-secrets
+just secrets-view            # ou .\launch.ps1 -c view-secrets, ./launch.sh view-secrets
 
-# Via le menu
-.\menu.ps1 # Option "Gérer les secrets"
+# Via le menu : options 10 (éditer) et 11 (voir)
 ```
+
+`edit-secrets` lance `init-secrets` si `secrets.env` n'existe pas encore. `view-secrets` affiche les secrets en clair dans le terminal.
 
 ### Format du fichier secrets.env
 
@@ -491,30 +406,36 @@ SERVICE1_SECRET_TOKEN=token123
 SERVICE2_DB_PASSWORD=password456
 ```
 
-### Configuration SOPS (.sops.yaml)
+### Synchroniser les secrets avec les profils
 
-```yaml
-creation_rules:
-  - path_regex: secrets\.env$
-    # Option 1 : AWS KMS
-    kms: 'arn:aws:kms:REGION:ACCOUNT:key/KEY-ID'
-    
-    # Option 2 : Age
-    # age: 'age1...'
+```powershell
+.\manage-profiles.ps1 -Action sync-secrets   # PowerShell
+./manage-profiles.sh sync-secrets            # Bash
+```
+
+`sync-secrets` déchiffre `secrets.env`, liste les secrets requis par les profils activés qui n'y figurent pas encore et, après confirmation, les ajoute avec leur valeur par défaut avant de rechiffrer le fichier. Les règles de détection sont décrites dans [Section `secrets:`](#section-secrets-recommandée).
+
+Pour afficher uniquement les noms détectés, sans SOPS ni déchiffrement :
+
+```powershell
+.\manage-profiles.ps1 -Action list-secrets   # PowerShell
+./manage-profiles.sh list-secrets            # Bash
 ```
 
 ## 📋 Format d'un profil
 
-Les profils sont des fichiers YAML dans le dossier `profiles/` :
+Les profils sont des fichiers YAML dans le dossier `profiles/`. `profiles/example.yml` est un modèle entièrement commenté.
 
 ```yaml
 # profiles/mon-service.yml
 name: mon-service
 description: "Description du service"
-enabled: true
-expose_ports: false  # true pour publier la section ports (voir ci-dessous)
+enabled: true                 # false : le profil est ignoré à la génération
+always_active: false          # true : démarré par `just start`, sans profil Docker
+docker_profile: mon-service   # profil Docker du service (requis si always_active: false)
+expose_ports: false           # true pour publier la section ports (voir ci-dessous)
 
-# Configuration Docker Compose (copié tel quel, sauf ports)
+# Configuration Docker Compose (recopiée dans le service, sauf ports et environment)
 docker-compose:
   image: myregistry/service:latest
   container_name: mon-service
@@ -529,11 +450,10 @@ traefik:
   enabled: true
   prefix: /mon-service
   strip_prefix: true
-  port: 8000
+  docker_port: 8000     # port du service dans le conteneur
+  local_port: 8000      # port du même service lancé sur le poste, hors Docker
+  health_path: /health  # chemin du health check (défaut : /health)
   priority: 10
-  failover: false  # Active le failover host/docker
-  host_port: 8000  # Port du service local (si failover)
-  health_path: /health
 
 # Documentation des secrets requis (recommandé)
 secrets:
@@ -544,13 +464,31 @@ secrets:
     description: "Mot de passe de la base de données"
     default: changeme
 
-# Métadonnées (optionnel)
+# Métadonnées (optionnel, informatif)
 metadata:
   category: api
   tags:
     - backend
     - production
 ```
+
+Règles vérifiées par la validation (`validate-profiles.sh` / `validate-profiles.ps1`) :
+
+- `name`, `enabled` (`true` ou `false`) et `docker-compose.image` sont obligatoires ; `docker-compose.container_name` est recommandé et doit être unique entre profils activés ;
+- `always_active: false` exige un `docker_profile` ;
+- `expose_ports`, s'il est présent, vaut `true` ou `false` ;
+- quand `traefik.enabled` vaut `true`, `prefix` est requis et commence par `/`, `docker_port` et `local_port` sont compris entre 1 et 65535.
+
+Dans le service généré, les [variables partagées](#-variables-denvironnement-partagées) sont placées en tête de `environment`, avant celles du profil.
+
+### Routage Traefik et failover
+
+Pour chaque profil dont `traefik.enabled` vaut `true`, la génération crée une route `PathPrefix(<prefix>)` vers un service Traefik en failover :
+
+1. d'abord le service lancé sur le poste, hors Docker, sur le port `local_port` ;
+2. à défaut, le conteneur, sur le port `docker_port`.
+
+Les deux cibles sont testées sur `health_path` : un service qui ne répond pas avec succès sur ce chemin n'est pas routé. Ce mécanisme permet de lancer un service en local (débogage) sans arrêter son conteneur.
 
 ### Publication des ports (`expose_ports`)
 
@@ -571,32 +509,7 @@ Cette section documente explicitement les secrets requis :
 
 La commande `sync-secrets` utilise cette section pour mettre à jour automatiquement `secrets.env`.
 
-Si un profil n'a pas de section `secrets:`, `sync-secrets` se rabat sur les variables `${VAR:-défaut}` des entrées de `docker-compose.environment`. Les variables utilisées ailleurs (image, ports) ou dans des commentaires ne sont jamais considérées comme des secrets. Un `${VAR}` sans valeur par défaut n'en est pas un non plus, et une section `secrets:` vide désactive cette détection. La commande `list-secrets` affiche les noms détectés sans SOPS ni déchiffrement.
-name: mon-service
-enabled: true
-
-service:
-  image: registry.example.com/mon-service:latest
-  container_name: mon-service
-  ports:
-    - "8001:8000"
-  environment:
-    - ENV_MODE=docker
-    - SERVICE_PORT=8000
-    # Secrets chargés depuis secrets.env
-    - API_KEY=${MON_SERVICE_API_KEY}
-  healthcheck:
-    test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-    interval: 30s
-    timeout: 5s
-    retries: 3
-
-traefik:
-  enabled: true
-  prefix: /mon-service
-  strip_prefix: true
-  port: 8000
-```
+Si un profil n'a pas de section `secrets:`, `sync-secrets` se rabat sur les variables `${VAR:-défaut}` des entrées de `docker-compose.environment`. Les variables utilisées ailleurs (image, ports) ou dans des commentaires ne sont jamais considérées comme des secrets. Un `${VAR}` sans valeur par défaut n'en est pas un non plus, et une section `secrets:` vide désactive cette détection. La commande `list-secrets` affiche les noms détectés sans SOPS ni déchiffrement (voir [Synchroniser les secrets avec les profils](#synchroniser-les-secrets-avec-les-profils)).
 
 ## 🔧 Configuration avancée
 
@@ -619,17 +532,17 @@ docker-compose:
 
 Ensuite, basculez entre les images selon vos besoins :
 
-**Avec Just :**
-```bash
+**Avec Just (PowerShell) :**
+```powershell
 # Utiliser l'image par défaut (production avec tag latest)
 just start-profile example
 
 # Utiliser le tag dev
-$env:example_TAG="dev"
+$env:EXAMPLE_TAG="dev"
 just start-profile example
 
 # Utiliser une image locale
-$env:EXAMPLE_IMAGE="EXAMPLE"
+$env:EXAMPLE_IMAGE="example"
 $env:EXAMPLE_TAG="local"
 just start-profile example
 
@@ -650,12 +563,7 @@ $env:EXAMPLE_TAG="dev"
 .\launch.ps1 -p example
 
 # Changer image et tag
-$env:EXAMPLE_IMAGE="EXAMPLE"; $env:EXAMPLE_TAG="local"
-.\launch.ps1 -p example
-
-# Ou en ligne séparée
-$env:EXAMPLE_IMAGE = "ghcr.io/myorg/EXAMPLE"
-$env:EXAMPLE_TAG = "staging"
+$env:EXAMPLE_IMAGE="example"; $env:EXAMPLE_TAG="local"
 .\launch.ps1 -p example
 ```
 
@@ -666,17 +574,17 @@ export EXAMPLE_TAG="dev"
 ./launch.sh --profile example start
 
 # Changer image et tag en une ligne
-EXAMPLE_IMAGE="EXAMPLE" EXAMPLE_TAG="local" ./launch.sh --profile example start
+EXAMPLE_IMAGE="example" EXAMPLE_TAG="local" ./launch.sh --profile example start
 ```
 
 #### Méthode 2 : Fichier .env pour une configuration persistante
 
-Créez un fichier `.env` à la racine (il est déjà dans `.gitignore`) :
+Créez un fichier `.env` à la racine (non versionné, il est déjà dans `.gitignore`) pour vos variables locales non sensibles ; `.env.example` sert de modèle :
 
 ```env
 # .env
 # Images personnalisées avec tags séparés
-EXAMPLE_IMAGE=<id>.dkr.ecr.ca-central-1.amazonaws.com/cgpt-EXAMPLE
+EXAMPLE_IMAGE=<id>.dkr.ecr.ca-central-1.amazonaws.com/cgpt-example
 EXAMPLE_TAG=dev
 
 FRONTEND_IMAGE=ghcr.io/myorg/frontend
@@ -685,9 +593,8 @@ FRONTEND_TAG=feature-xyz
 API_IMAGE=myregistry.com/api
 API_TAG=v2.0.0
 
-# Ou pour développement local
-EXAMPLE_IMAGE=EXAMPLE
-EXAMPLE_TAG=local
+# Registre Docker
+DOCKER_REGISTRY=registry.example.com
 
 # Versions spécifiques des dépendances
 NODE_VERSION=20-alpine
@@ -724,110 +631,44 @@ image: ${SERVICE_IMAGE:-registry.com/service:v1.0.0}
 
 ### Configuration globale (config.yml)
 
-Le fichier `config.yml` permet d'activer/désactiver des services optionnels :
+Le fichier `config.yml` regroupe la configuration commune à tous les services. Relancez `just generate` après l'avoir modifié.
+
+| Clé | Rôle | Défaut |
+|-----|------|--------|
+| `namespace` | Nom du projet Docker Compose (clé `name:`) et préfixe des conteneurs Traefik, Dozzle et socket-proxy | `devlocal` |
+| `dozzle_enabled` | Active Dozzle (monitoring des logs Docker) | `true` |
+| `dozzle_port` | Port local de Dozzle, publié sur `127.0.0.1` | `9999` |
+| `registries.ecr.url` | Registre utilisé par `just ecr-login` | — |
+| `registries.jfrog.url` | Registre utilisé par `just jfrog-login` | — |
+| `aws.profile`, `aws.region` | Voir [Configuration du profil AWS](#configuration-du-profil-aws) | — |
+| `shared_env`, `shared_env_config` | Voir [Variables d'environnement partagées](#-variables-denvironnement-partagées) | — |
 
 ```yaml
 # Dozzle - Monitoring des logs Docker
-dozzle_enabled: true
-dozzle_port: 9999  # Accessible via http://localhost:9999 ou http://localhost:8080/logs
-```
-
-### Variables d'environnement
-
-Créer un fichier `.env` (non versionné) pour les variables locales :
-
-```env
-# Registre Docker
-DOCKER_REGISTRY=registry.example.com
-
-# Versions des images
-SERVICE1_VERSION=latest
-SERVICE2_VERSION=v1.2.3
+dozzle_enabled: true   # false pour désactiver Dozzle
+dozzle_port: 9999      # Accessible via http://localhost:9999 ou http://localhost:8080/logs
 ```
 
 ### Personnalisation Traefik
 
-Modifier `traefik/traefik.yml` pour :
-- Changer les ports
+`traefik/traefik.yml` contient la configuration statique de Traefik (points d'entrée dans le conteneur, dashboard, niveau de log, fournisseurs). Modifiez-le pour :
 - Activer HTTPS
 - Configurer les certificats
-- Ajouter des middlewares
+- Changer le niveau de log
+
+Les ports publiés sur l'hôte (`127.0.0.1:8080` pour HTTP, `127.0.0.1:8081` pour le dashboard) sont fixés par les scripts `manage-profiles.*` : modifier `docker-compose.yml` à la main ne suffit pas, le fichier est réécrit à chaque génération. Les middlewares générés (suppression du préfixe) se règlent dans les profils (`strip_prefix`).
 
 ## 🛠️ Scripts et commandes disponibles
-
-### Scripts principaux
 
 | Script | Windows | Linux/macOS | Just | Description |
 |--------|---------|-------------|------|-------------|
 | **Menu interactif** | `.\menu.ps1` | `./menu.sh` | `just menu` | Interface guidée pour toutes les opérations |
-| **Lancer services** | `.\launch.ps1` | `./launch.sh start` | `just start` | Orchestration des services Docker |
-| **Gérer profils** | `.\manage-profiles.ps1` | `./manage-profiles.sh` | - | Gestion des profils de services |
+| **Lancer services** | `.\launch.ps1` | `./launch.sh start` | `just start` | Orchestration des services Docker, secrets, AWS |
+| **Gérer profils** | `.\manage-profiles.ps1` | `./manage-profiles.sh` | `just profiles`, `just generate` | Gestion des profils, génération, `secrets.env` |
+| **Valider profils** | `.\validate-profiles.ps1` | `./validate-profiles.sh` | - | Validation des profils |
+| **Permissions .sh** | `.\fix-sh-permissions.ps1` | `chmod +x *.sh` | - | Bit exécutable des scripts Bash |
 
-### Commandes par catégorie
-
-#### 🐳 Services Docker
-
-| Action | Just | PowerShell | Bash |
-|--------|------|------------|------|
-| Démarrer tous | `just start` | `.\launch.ps1` | `./launch.sh start` |
-| Démarrer profils | `just start-profile api,ui` | `.\launch.ps1 -p api,ui` | `./launch.sh --profile api,ui start` |
-| Arrêter | `just stop` | `.\launch.ps1 stop` | `./launch.sh stop` |
-| Redémarrer | `just restart` | `.\launch.ps1 recreate` | `./launch.sh recreate` |
-| Statut | `just ps` | `.\launch.ps1 ps` | `./launch.sh ps` |
-| Logs tous | `just logs` | `.\launch.ps1 logs` | `./launch.sh logs` |
-| Logs service | `just logs api` | `.\launch.ps1 logs -service api` | `./launch.sh logs api` |
-| Commande ponctuelle | `just run gulp npx gulp build` | `.\launch.ps1 run gulp -- npx gulp build` | `./launch.sh run gulp npx gulp build` |
-| Nettoyer | `just clean` | `docker compose --profile "*" down -v --remove-orphans` | `docker compose --profile "*" down -v --remove-orphans` |
-
-#### 📋 Profils de services
-
-| Action | Just | PowerShell | Bash |
-|--------|------|------------|------|
-| Lister | `just profiles` | `.\manage-profiles.ps1 list` | `./manage-profiles.sh list` |
-| Ajouter | - | `.\manage-profiles.ps1 add` | `./manage-profiles.sh add` |
-| Générer | `just generate` | `.\manage-profiles.ps1 generate` | `./manage-profiles.sh generate` |
-| Valider | `just validate` | `docker compose config --quiet` | `docker compose config --quiet` |
-
-#### 🔐 Secrets (SOPS)
-
-| Action | Just | PowerShell | Bash |
-|--------|------|------------|------|
-| Éditer | `just secrets-edit` | `.\launch.ps1 edit-secrets` | `./launch.sh edit-secrets` |
-| Voir | `just secrets-view` | `.\launch.ps1 view-secrets` | `./launch.sh view-secrets` |
-| Initialiser | - | `.\manage-profiles.ps1 init-secrets` | `./manage-profiles.sh init-secrets` |
-| Synchroniser | - | `.\manage-profiles.ps1 sync-secrets` | `./manage-profiles.sh sync-secrets` |
-
-#### ☁️ AWS et Docker Registry
-
-| Action | Just | PowerShell | Bash |
-|--------|------|------------|------|
-| AWS SSO Login | `just aws-sso` | `.\launch.ps1 sso` | `./launch.sh sso` |
-| AWS Identity | `just aws-id` | `.\launch.ps1 id` | `./launch.sh id` |
-| ECR Login | `just ecr-login` | `.\launch.ps1 ecr-login` | `./launch.sh ecr-login` |
-| JFrog Login | `just jfrog-login` | `.\launch.ps1 jfrog-login` | `./launch.sh jfrog-login` |
-
-#### 🔧 Utilitaires
-
-| Action | Just | PowerShell | Bash |
-|--------|------|------------|------|
-| Config finale | `just config` | `docker compose config` | `docker compose config` |
-| Vérifier perms .sh | - | `.\fix-sh-permissions.ps1` | `chmod +x *.sh` |
-| Menu | `just menu` | `.\menu.ps1` | `./menu.sh` |
-
-### Raccourcis Just (aliases)
-
-Si vous utilisez Just, ces raccourcis sont disponibles :
-
-```bash
-just s     # start
-just st    # stop
-just r     # restart
-just p     # ps (statut)
-just g     # generate
-just v     # validate
-just l     # logs
-just m     # menu
-```
+Toutes les commandes, par catégorie (services Docker, profils, secrets, AWS, utilitaires), ainsi que les alias Just et les options du menu, sont dans [CHEATSHEET.md](CHEATSHEET.md).
 
 ## 📚 Exemples pratiques
 
@@ -873,45 +714,11 @@ just start-profile api-backend,frontend
 
 ### Exemple 2 : Microservices avec services externes
 
-Utiliser les variables partagées pour des URLs communes :
-
-```yaml
-# config.yml
-shared_env:
-  global:
-    - LOG_LEVEL=info
-    - NODE_ENV=development
-  
-  external_services:
-    - AUTH_SERVICE_URL=https://auth.mycompany.com
-    - PAYMENT_API_URL=https://api.stripe.com/v1
-    - STORAGE_URL=https://s3.amazonaws.com/mybucket
-```
-
-Tous vos services auront automatiquement accès à ces variables !
+Déclarez les URLs communes (authentification, paiement, stockage) une seule fois dans `config.yml` : tous vos services y auront automatiquement accès. Les exemples complets sont dans [docs/shared-env-examples.md](docs/shared-env-examples.md).
 
 ### Exemple 3 : Basculer entre environnements
 
-Utiliser des variables d'environnement pour basculer entre dev/staging/prod :
-
-```powershell
-# Développement local
-$env:API_IMAGE="api"; $env:API_TAG="local"
-.\launch.ps1 -p api-backend
-
-# Staging
-$env:API_IMAGE="myregistry/api"; $env:API_TAG="staging"
-.\launch.ps1 -p api-backend
-
-# Production
-$env:API_IMAGE="myregistry/api"; $env:API_TAG="v2.1.0"
-.\launch.ps1 -p api-backend
-
-# Ou via fichier .env (persistent)
-echo "API_IMAGE=myregistry/api" > .env
-echo "API_TAG=dev" >> .env
-.\launch.ps1 -p api-backend
-```
+Pour passer d'une image locale à une image de staging ou de production, définissez `<SERVICE>_IMAGE` et `<SERVICE>_TAG` dans le shell ou dans `.env` : voir [Basculer entre différentes images Docker](#basculer-entre-différentes-images-docker).
 
 ### Exemple 4 : Développement avec hot-reload
 
@@ -1004,59 +811,14 @@ docker-compose:
 
 Dev.Local supporte l'authentification AWS SSO et les connexions aux registres Docker privés.
 
-### Connexion AWS SSO
+| Action | Just | Windows | Linux/macOS |
+|--------|------|---------|-------------|
+| Connexion AWS SSO (avant d'utiliser des images AWS ECR) | `just aws-sso` | `.\launch.ps1 sso` | `./launch.sh sso` |
+| Vérifier l'identité AWS utilisée | `just aws-id` | `.\launch.ps1 id` | `./launch.sh id` |
+| Authentifier Docker auprès d'AWS ECR (une fois connecté à AWS SSO) | `just ecr-login` | `.\launch.ps1 ecr-login` | `./launch.sh ecr-login` |
+| Authentifier Docker auprès de JFrog | `just jfrog-login` | `.\launch.ps1 jfrog-login` | `./launch.sh jfrog-login` |
 
-Avant d'utiliser des images depuis AWS ECR, connectez-vous avec AWS SSO :
-
-**Avec Just :**
-```bash
-just aws-sso
-```
-
-**Avec les scripts :**
-```powershell
-# Windows
-.\launch.ps1 sso
-
-# Linux/macOS
-./launch.sh sso
-```
-
-### Connexion Docker à AWS ECR
-
-Une fois connecté à AWS SSO, authentifiez Docker avec ECR :
-
-**Avec Just :**
-```bash
-just ecr-login
-```
-
-**Avec les scripts :**
-```powershell
-# Windows
-.\launch.ps1 ecr-login
-
-# Linux/macOS
-./launch.sh ecr-login
-```
-
-### Vérifier l'identité AWS
-
-Pour vérifier quelle identité AWS est actuellement utilisée :
-
-**Avec Just :**
-```bash
-just aws-id
-```
-
-**Avec les scripts :**
-```powershell
-# Windows
-.\launch.ps1 id
-
-# Linux/macOS
-./launch.sh id
-```
+Les adresses des registres viennent de `registries.ecr.url` et `registries.jfrog.url` dans `config.yml`.
 
 ### Workflow complet avec AWS
 
@@ -1090,41 +852,34 @@ Les trois commandes passent toujours `--profile` à AWS CLI : les identifiants p
 
 ## 🐧 Support Linux/macOS
 
-Dev.Local est **100% compatible** avec Linux et macOS grâce aux scripts Bash !
-
-### Scripts Bash Disponibles
+Chaque script PowerShell a son équivalent Bash, qui génère la même configuration :
 
 - `menu.sh` - Menu interactif (équivalent de menu.ps1)
 - `manage-profiles.sh` - Gestion des profils (équivalent de manage-profiles.ps1)
 - `launch.sh` - Orchestration des services (équivalent de launch.ps1)
-- `test-bash-scripts.sh` - Validation automatique de l'installation
-
-### Utilisation sur Linux/macOS
+- `validate-profiles.sh` - Validation des profils (équivalent de validate-profiles.ps1)
 
 ```bash
 # Rendre les scripts exécutables (une seule fois)
 chmod +x *.sh
-
-# Lancer le menu interactif
-./menu.sh
-
-# Ou utiliser directement les commandes
-./manage-profiles.sh add
-./launch.sh start
 ```
 
-### Documentation Bash
-
-- [BASH_README.md](BASH_README.md) - Guide complet pour Linux/macOS
-- [CHEATSHEET.md](CHEATSHEET.md) - Aide-mémoire des commandes
+Les particularités de Linux/macOS (différences avec PowerShell, compatibilité, terminal, migration depuis Windows) sont décrites dans [BASH_README.md](BASH_README.md).
 
 ## 📚 Documentation Complète
 
-### Guides Disponibles
+Chaque document a un rôle précis ; une information n'est décrite qu'à un seul endroit.
 
-- [QUICKSTART.md](QUICKSTART.md) - Démarrage rapide (Windows + Linux)
-- [BASH_README.md](BASH_README.md) - Guide utilisateur Linux/macOS
-- [CHEATSHEET.md](CHEATSHEET.md) - Aide-mémoire des commandes essentielles
+| Document | Rôle |
+|----------|------|
+| [README.md](README.md) | Référence complète : concepts, configuration, comportement |
+| [QUICKSTART.md](QUICKSTART.md) | Premier démarrage en quelques minutes (parcours minimal) |
+| [CHEATSHEET.md](CHEATSHEET.md) | Aide-mémoire : toutes les commandes, sans explications |
+| [BASH_README.md](BASH_README.md) | Particularités Linux/macOS des scripts Bash |
+| [docs/shared-env-guide.md](docs/shared-env-guide.md) | Référence des variables d'environnement partagées |
+| [docs/shared-env-examples.md](docs/shared-env-examples.md) | Exemples complets de variables partagées |
+| [docs/sops_age_guide.md](docs/sops_age_guide.md) | Configurer SOPS avec une clé Age |
+| [docs/gitattributes-guide.md](docs/gitattributes-guide.md) | Fins de ligne et `.gitattributes` |
 
 ## 🔒 Sécurité
 
@@ -1133,6 +888,7 @@ chmod +x *.sh
 - ✅ Validation automatique de la configuration SOPS
 - ✅ Aucun secret en dur dans les fichiers versionnés
 - ✅ Traefik et Dozzle publiés uniquement sur `127.0.0.1`
+- ✅ Ports des profils non publiés par défaut, et liés à `127.0.0.1` quand ils le sont (voir [Publication des ports](#publication-des-ports-expose_ports))
 - ✅ Socket Docker isolé : seul le service `socket-proxy` le monte ; Traefik et Dozzle passent par lui en lecture seule, sur un réseau interne inaccessible aux services des profils
 
 ## 🌍 Compatibilité Multiplateforme
@@ -1227,28 +983,113 @@ Users must migrate to v2 format using the migration script.
 3. **Important** : Les secrets doivent TOUJOURS être placés dans `secrets.env` (chiffré avec SOPS), jamais dans les profils ou autres fichiers versionnés
 4. Committer le profil en respectant le format Conventional Commits
 
-## 📞 Support
+## 🔧 Dépannage
 
-### Windows (PowerShell)
-1. Consulter [README.md](README.md) et [QUICKSTART.md](QUICKSTART.md)
-2. Utiliser le menu : `.\menu.ps1`
-3. Aide-mémoire : [CHEATSHEET.md](CHEATSHEET.md)
+Commencez par le menu (`just menu`) : chaque option affiche la commande exécutée. Les commandes de diagnostic générales sont :
 
-### Linux/macOS (Bash)
-1. Consulter [BASH_README.md](BASH_README.md)
-2. Utiliser le menu : `./menu.sh`
-3. Tester l'installation : `./test-bash-scripts.sh`
-
-### Logs et Débogage
 ```bash
-# Valider la configuration
-docker compose config --quiet
+docker compose config --quiet        # valider docker-compose.yml (aucune sortie = OK)
+./validate-profiles.sh               # valider les profils (.\validate-profiles.ps1 sous Windows)
+docker compose logs -f               # logs de tous les services
+docker compose logs -f service-name  # logs d'un service
+sops -d secrets.env                  # tester le déchiffrement SOPS
+```
 
-# Voir les logs
-docker compose logs -f
+### Erreur : "command not found" ou "Permission denied"
 
-# Tester SOPS
+Sous Linux/macOS, ajoutez le bit exécutable : `chmod +x *.sh`. Sous Windows, voir [Développeurs Windows : Permissions des fichiers .sh](#-développeurs-windows--permissions-des-fichiers-sh).
+
+### Erreur : "bad interpreter: /bin/bash^M"
+
+Le fichier utilise des fins de ligne CRLF au lieu de LF.
+
+```bash
+# Solution 1 : Utiliser dos2unix
+dos2unix launch.sh
+
+# Solution 2 : Avec sed
+sed -i 's/\r$//' launch.sh
+
+# Prévention : .gitattributes est configuré pour forcer LF
+git check-attr -a launch.sh
+```
+
+Voir [docs/gitattributes-guide.md](docs/gitattributes-guide.md).
+
+### Erreur : "SOPS n'est pas installé"
+
+Voir [Installation de SOPS](#installation-de-sops).
+
+### SOPS ne fonctionne pas
+
+Messages typiques : « .sops.yaml non trouvé », « Aucune méthode de chiffrement configurée », « no key found », échec du déchiffrement.
+
+```powershell
+# Vérifier que SOPS est installé
+sops --version
+
+# Vérifier la config : une ligne kms: ou age: doit être active
+Get-Content .sops.yaml          # cat .sops.yaml sous Bash
+
+# Pour Age, vérifier la clé
+$env:SOPS_AGE_KEY_FILE          # echo $SOPS_AGE_KEY_FILE sous Bash
+Get-Content $env:SOPS_AGE_KEY_FILE
+
+# Pour KMS, vérifier AWS
+.\launch.ps1 -c id              # ./launch.sh id sous Bash
+```
+
+Si `.sops.yaml` n'existe pas ou ne contient aucune clé active, reprenez [Configuration SOPS (.sops.yaml)](#configuration-sops-sopsyaml). Pour Age, voir aussi le dépannage de [docs/sops_age_guide.md](docs/sops_age_guide.md#5-dépannage).
+
+### Les secrets ne se chargent pas
+
+```powershell
+# Vérifier que secrets.env existe
+Test-Path secrets.env           # ls secrets.env sous Bash
+
+# Tester le déchiffrement
 sops -d secrets.env
+
+# PowerShell : vérifier une variable après un démarrage
+$env:MON_SECRET
+```
+
+Sous Bash, les secrets ne sont exportés que pour la durée de `launch.sh` : ils n'apparaissent pas dans votre shell. Vérifiez-les dans le conteneur avec `docker compose exec <service> env`.
+
+### Erreur : "Docker Compose v2+ requis"
+
+```bash
+# Vérifier la version
+docker compose version
+```
+
+Si vous avez docker-compose v1, installez la v2 : https://docs.docker.com/compose/install/
+
+### Docker Compose ne trouve pas les services
+
+```powershell
+# Regénérer docker-compose.yml
+.\manage-profiles.ps1 -Action generate    # ou just generate
+
+# Vérifier le fichier
+Get-Content docker-compose.yml
+```
+
+Un profil dont `enabled` vaut `false` n'est pas généré, et un service rattaché à un profil Docker ne démarre qu'avec `just start-profile <profil>` (voir [Utilisation](#-utilisation)).
+
+### Un service ne répond pas sur son port
+
+Les ports d'un profil ne sont publiés que si `expose_ports: true` (voir [Publication des ports](#publication-des-ports-expose_ports)) ; sinon, passez par Traefik : `http://localhost:8080/<prefix>`. Si Traefik ne route pas le service, vérifiez que celui-ci répond sur `health_path` (voir [Routage Traefik et failover](#routage-traefik-et-failover)).
+
+### yq : échec du téléchargement de l'image
+
+Sans `yq` local, les scripts Bash téléchargent l'image `mikefarah/yq` au premier lancement. Hors ligne, installez `yq` : voir [(Optionnel) Installation de yq](#optionnel-installation-de-yq-recommandé).
+
+### Erreurs d'encodage UTF-8 (Linux/macOS)
+
+```bash
+export LANG=en_US.UTF-8
+export LC_ALL=en_US.UTF-8
 ```
 
 ## 🔧 Développeurs Windows : Permissions des fichiers .sh
@@ -1286,10 +1127,12 @@ Le fichier `.gitattributes` est déjà configuré pour :
 - Assurer que les `.sh` utilisent LF (fins de ligne Unix)
 - Normaliser les fins de ligne selon le type de fichier
 
+Le détail des règles est dans [docs/gitattributes-guide.md](docs/gitattributes-guide.md).
+
 **Important :** Après modification des permissions, committez les changements :
 ```powershell
 git add <fichiers>
-git commit -m "Fix: Ajouter bit exécutable aux scripts .sh"
+git commit -m "fix(scripts): add executable bit to .sh files"
 ```
 
 ## 📄 Licence
