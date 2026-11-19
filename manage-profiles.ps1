@@ -31,12 +31,31 @@ param(
 $PSDefaultParameterValues['*:Encoding'] = 'UTF8'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
-# Check for powershell-yaml module
-if (-not (Get-Module -ListAvailable powershell-yaml)) {
+# Module powershell-yaml : installé seulement s'il est absent
+if (-not (Get-Module -ListAvailable -Name powershell-yaml)) {
     Write-Warning "Le module 'powershell-yaml' est requis. Installation..."
-    Install-Module powershell-yaml -Scope CurrentUser -Force -AllowClobber
+    try {
+        Install-Module powershell-yaml -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
+    }
+    catch {
+        Write-Host "❌ Impossible d'installer le module 'powershell-yaml' : $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "   Vérifiez votre connexion, puis installez-le : Install-Module powershell-yaml -Scope CurrentUser" -ForegroundColor Yellow
+        exit 1
+    }
 }
-Import-Module powershell-yaml
+try {
+    Import-Module powershell-yaml -ErrorAction Stop
+}
+catch {
+    Write-Host "❌ Impossible de charger le module 'powershell-yaml' : $($_.Exception.Message)" -ForegroundColor Red
+    exit 1
+}
+# -Ordered conserve l'ordre des clés du fichier (environment en map)
+if (-not (Get-Command ConvertFrom-Yaml).Parameters.ContainsKey('Ordered')) {
+    Write-Host "❌ Le module 'powershell-yaml' installé est trop ancien (option -Ordered absente)." -ForegroundColor Red
+    Write-Host "   Mettez-le à jour : Update-Module powershell-yaml" -ForegroundColor Yellow
+    exit 1
+}
 
 # Chemins
 $ProfilesDir = "profiles"
@@ -191,23 +210,23 @@ function Add-Profile {
     $name = Read-Host "`nNom du service (ex: api-backend, frontend)"
     if ([string]::IsNullOrWhiteSpace($name)) {
         Write-Error "Le nom est requis"
-        return
+        exit 1
     }
     
     # Nettoyer le nom
     $name = $name.ToLower() -replace '[^a-z0-9-]', '-'
-    $fileName = "$ProfilesDir\$name.yml"
+    $fileName = Join-Path $ProfilesDir "$name.yml"
     
     if (Test-Path $fileName) {
         Write-Error "Un profil '$name' existe déjà !"
-        return
+        exit 1
     }
     
     $description = Read-Host "Description du service"
+    $image = Read-Host "Image Docker (ex: nginx:latest, registry.io/myapp:v1.0)"
     $dockerPort = Read-Host "Port interne du conteneur (ex: 80, 8000)"
-    if ([string]::IsNullOrWhiteSpace($dockerPort)) { $dockerPort = "80" }
-
     $localPort = Read-Host "Port exposé localement (via Traefik host) (ex: 8001)"
+    if ([string]::IsNullOrWhiteSpace($dockerPort)) { $dockerPort = "80" }
     if ([string]::IsNullOrWhiteSpace($localPort)) { $localPort = $dockerPort }
 
     # Par défaut le service n'est joignable que via Traefik ; publier un port est optionnel
@@ -320,7 +339,10 @@ metadata:
     - $name
 "@
     
-    $profileContent | Out-File -FilePath $fileName -Encoding UTF8
+    if (-not (Test-Path $ProfilesDir)) {
+        New-Item -ItemType Directory -Path $ProfilesDir | Out-Null
+    }
+    Write-GeneratedFile -Path $fileName -Content $profileContent
     
     Write-Host "`n✅ Profil créé : $fileName" -ForegroundColor Green
     Write-Host "📝 Vous pouvez éditer ce fichier pour personnaliser davantage" -ForegroundColor Gray
@@ -384,7 +406,7 @@ function Generate-DockerCompose {
     
     if ($profiles.Count -eq 0) {
         Write-Warning "Aucun profil trouvé"
-        return
+        exit 1
     }
 
     # Validation des profils avant génération
@@ -1009,12 +1031,12 @@ function Initialize-Secrets {
     # Vérifier SOPS
     if (-not (Get-Command sops -ErrorAction SilentlyContinue)) {
         Write-Error "SOPS n'est pas installé. Installez-le d'abord."
-        return
+        exit 1
     }
     
     if (-not (Test-Path ".sops.yaml")) {
         Write-Error "Fichier .sops.yaml introuvable. Configurez SOPS d'abord (voir docs/sops_age_guide.md)."
-        return
+        exit 1
     }
 
     # Copier l'exemple
@@ -1030,7 +1052,7 @@ function Initialize-Secrets {
     if ($LASTEXITCODE -ne 0) {
         Remove-Item $SecretsFile -Force -ErrorAction SilentlyContinue
         Write-Error "Échec du chiffrement SOPS - $SecretsFile supprimé. Vérifiez .sops.yaml."
-        return
+        exit 1
     }
 
     Write-Host "`n✅ Fichier $SecretsFile créé et chiffré" -ForegroundColor Green
@@ -1041,13 +1063,22 @@ function Initialize-Secrets {
     }
 }
 
-# Main
-switch ($Action) {
-    'add' { Add-Profile }
-    'list' { Show-Profiles }
-    'generate' { Generate-DockerCompose }
-    'init-secrets' { Initialize-Secrets }
-    'sync-secrets' { Sync-Secrets }
-    'list-secrets' { Show-SecretVariables }
-    default { Show-Profiles }
+# Main : exécuté depuis le dossier du script, comme manage-profiles.sh. Le dossier courant de
+# l'appelant est restauré sur toutes les sorties, y compris exit dans une fonction : menu.ps1
+# et launch.ps1 appellent ce script avec & dans leur propre session.
+Push-Location -LiteralPath $PSScriptRoot
+try {
+    switch ($Action) {
+        'add' { Add-Profile }
+        'list' { Show-Profiles }
+        'generate' { Generate-DockerCompose }
+        'init-secrets' { Initialize-Secrets }
+        'sync-secrets' { Sync-Secrets }
+        'list-secrets' { Show-SecretVariables }
+        default { Show-Profiles }
+    }
 }
+finally {
+    Pop-Location
+}
+exit 0
