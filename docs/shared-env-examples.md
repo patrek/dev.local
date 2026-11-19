@@ -1,6 +1,6 @@
 # 🧪 Exemples Pratiques - Variables Partagées
 
-Ce document contient des exemples concrets d'utilisation des variables d'environnement partagées.
+> **Rôle de ce document :** exemples complets de variables d'environnement partagées, à copier et adapter. Les clés de `config.yml`, les règles d'injection, les bonnes pratiques et la vérification sont décrites dans [shared-env-guide.md](shared-env-guide.md).
 
 ## 📋 Table des matières
 
@@ -9,6 +9,8 @@ Ce document contient des exemples concrets d'utilisation des variables d'environ
 3. [Exemple 2 : APIs externes communes](#exemple-2--apis-externes-communes)
 4. [Exemple 3 : Configuration multi-environnement](#exemple-3--configuration-multi-environnement)
 5. [Exemple 4 : Variables spécifiques par service](#exemple-4--variables-spécifiques-par-service)
+6. [Exemple 5 : Exclure certains services](#exemple-5--exclure-certains-services)
+7. [Exemple 6 : Feature flags](#exemple-6--feature-flags)
 
 ---
 
@@ -321,12 +323,35 @@ services:
       - MESSAGE_RETRY_COUNT=3
 ```
 
+### Variante : aucune injection automatique
+
+Pour qu'un groupe ne soit injecté que dans les services qui en ont besoin, laissez `auto_inject` vide :
+
+```yaml
+shared_env:
+  database_config:
+    - DB_POOL_MIN=5
+    - DB_POOL_MAX=20
+    - DB_TIMEOUT=30000
+
+shared_env_config:
+  # Ne pas injecter automatiquement
+  auto_inject: []
+  
+  # Seulement pour les services qui ont besoin de DB
+  service_specific:
+    api-backend:
+      - database_config
+    worker-service:
+      - database_config
+```
+
 ---
 
 ## Exemple 5 : Exclure certains services
 
 ### Contexte
-Certains services (Traefik, Dozzle, Redis) n'ont pas besoin des variables métier.
+Certains services (Redis, PostgreSQL, ...) n'ont pas besoin des variables métier. Traefik et Dozzle, intégrés à Dev.Local, n'en reçoivent jamais : les lister dans `exclude_services` est sans effet.
 
 ### config.yml
 
@@ -378,98 +403,34 @@ services:
 
 ---
 
-## 🎯 Bonnes pratiques
+## Exemple 6 : Feature flags
 
-### ✅ Recommandé
+### Contexte
+Activer ou désactiver des fonctionnalités dans tous les services depuis un seul endroit.
 
-1. **Grouper par fonction**
-   ```yaml
-   shared_env:
-     auth:
-       - AUTH_URL=...
-       - AUTH_TIMEOUT=...
-     
-     storage:
-       - S3_BUCKET=...
-       - S3_REGION=...
-   ```
+### config.yml
 
-2. **Nommer clairement**
-   ```yaml
-   # ✅ Bon
-   - API_GATEWAY_URL=...
-   - AUTH_SERVICE_URL=...
-   
-   # ❌ Mauvais
-   - URL1=...
-   - SVC=...
-   ```
+```yaml
+shared_env:
+  feature_flags:
+    - FEATURE_NEW_UI=true
+    - FEATURE_BETA_API=false
+    - FEATURE_ANALYTICS=true
 
-3. **Utiliser des valeurs par défaut raisonnables**
-   ```yaml
-   # Pour dev local
-   - LOG_LEVEL=debug
-   - ENABLE_CORS=true
-   ```
-
-### ❌ À éviter
-
-1. **Secrets en clair**
-   ```yaml
-   # ❌ JAMAIS de secrets ici
-   shared_env:
-     bad:
-       - DATABASE_PASSWORD=secret123  # Utiliser secrets.env !
-   ```
-
-2. **Trop de variables globales**
-   ```yaml
-   # ❌ Trop de variables dans global
-   global:
-     - VAR1=...
-     - VAR2=...
-     # ... 50 variables ...
-   
-   # ✅ Mieux : grouper
-   database:
-     - DB_VAR1=...
-     - DB_VAR2=...
-   ```
+shared_env_config:
+  auto_inject:
+    - feature_flags
+```
 
 ---
 
+## 🎯 Bonnes pratiques
+
+Voir [Bonnes pratiques](shared-env-guide.md#-bonnes-pratiques) et [Secrets vs Variables partagées](shared-env-guide.md#-secrets-vs-variables-partagées) dans le guide : en particulier, ne mettez jamais de secrets dans `shared_env`.
+
 ## 🔍 Debugging
 
-### Voir les variables injectées
-
-```powershell
-# Générer avec affichage détaillé
-.\manage-profiles.ps1 -Action generate
-
-# Vérifier dans docker-compose.yml
-Get-Content docker-compose.yml | Select-String "Variables partagées" -Context 0,10
-
-# Tester dans un conteneur
-docker compose exec mon-service env | grep API_URL
-```
-
-### Vérifier l'ordre de priorité
-
-Les variables sont appliquées dans cet ordre (dernière gagne) :
-
-1. Variables partagées (config.yml)
-2. Variables du profil (profiles/service.yml)
-3. Variables d'environnement du shell (au runtime)
-
-```bash
-# Ordre de priorité :
-# 1. config.yml shared_env → LOG_LEVEL=info
-# 2. profiles/api.yml → LOG_LEVEL=debug (écrase)
-# 3. Shell env → LOG_LEVEL=error (écrase)
-
-LOG_LEVEL=error docker compose up api
-# Résultat final : LOG_LEVEL=error
-```
+Pour voir les variables injectées, les tester dans un conteneur et comprendre l'ordre de priorité entre `config.yml`, profil et shell, voir [Vérification](shared-env-guide.md#-vérification) dans le guide.
 
 ---
 
