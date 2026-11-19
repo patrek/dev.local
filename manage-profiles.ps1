@@ -354,7 +354,18 @@ function Generate-DockerCompose {
         Write-Warning "Aucun profil trouvé"
         return
     }
-    
+
+    # Validation des profils avant génération
+    if (Test-Path ".\validate-profiles.ps1") {
+        Write-Host "`n🔍 Validation des profils..." -ForegroundColor Cyan
+        & .\validate-profiles.ps1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "`n❌ La validation a échoué. Corrigez les erreurs avant de générer." -ForegroundColor Red
+            exit 1
+        }
+        Write-Host ""
+    }
+
     # Header
     # Load Config from YAML (already validated in Get-SharedEnvironmentVariables)
     $config = @{ namespace = 'default' }
