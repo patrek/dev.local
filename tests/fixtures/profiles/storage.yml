@@ -1,0 +1,27 @@
+# Volumes : seuls les volumes nommés (syntaxe courte et longue) sont déclarés dans la
+# section volumes: de premier niveau, une seule fois chacun ; ni les montages de dossiers
+# (chemin ou ${VAR}), ni le volume anonyme
+name: storage
+description: "Service avec volumes"
+enabled: true
+always_active: true
+docker_profile: null
+
+docker-compose:
+  image: nginx:alpine
+  container_name: storage
+  volumes:
+    - node_modules:/app/node_modules
+    - "node_modules:/opt/node_modules:ro"
+    - "./src:/app/src:ro"
+    - "${CACHE_DIR:-./cache}:/app/host-cache"
+    - /app/tmp
+    - type: volume
+      source: app-cache
+      target: /app/cache
+    - type: bind
+      source: ./config
+      target: /app/config
+
+traefik:
+  enabled: false

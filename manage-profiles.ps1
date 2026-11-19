@@ -319,6 +319,30 @@ function ConvertTo-LocalhostPortBinding {
     }
 }
 
+# Retourne les noms des volumes nommés d'une liste docker-compose.volumes. Un volume nommé
+# doit être déclaré dans la section volumes: de premier niveau, sinon docker compose refuse
+# le fichier. Mêmes règles que NAMED_VOLUMES_EXPR dans manage-profiles.sh :
+#   - syntaxe courte "nom:/chemin[:mode]" : la source est un nom de volume (au moins deux
+#     caractères, sinon Compose y voit une lettre de lecteur Windows), pas un chemin
+#     (./, /, ~, C:\) ni une variable (${VAR}) ;
+#   - syntaxe longue : type: volume avec une source.
+# Les montages de dossiers et les volumes anonymes ne sont pas retournés.
+function Get-NamedVolumeName {
+    param($Volumes)
+
+    if ($Volumes -is [string] -or $Volumes -is [System.Collections.IDictionary]) { return }
+
+    foreach ($volume in $Volumes) {
+        if ($volume -is [string]) {
+            if ($volume -cmatch '^([a-zA-Z0-9][a-zA-Z0-9_.-]+):') { $matches[1] }
+        }
+        elseif ($volume -is [System.Collections.IDictionary] -and $volume['type'] -ceq 'volume' -and
+            $volume['source'] -is [string] -and $volume['source'] -cmatch '^[a-zA-Z0-9][a-zA-Z0-9_.-]*$') {
+            $volume['source']
+        }
+    }
+}
+
 # Fonction pour générer docker-compose.yml
 function Generate-DockerCompose {
     Write-Host "`n🔧 GÉNÉRATION DE docker-compose.yml" -ForegroundColor Cyan
@@ -422,6 +446,8 @@ services:
     }
     
     # Ajouter chaque service
+    # Tri ordinal et sans doublon, comme "LC_ALL=C sort -u" dans manage-profiles.sh
+    $namedVolumes = [System.Collections.Generic.SortedSet[string]]::new([System.StringComparer]::Ordinal)
     foreach ($pro in $profiles) {
         $data = Read-ProfileYaml -Path $pro.FullName
         if (-not $data) { continue }
@@ -452,7 +478,11 @@ services:
             # Note: Si powershell-yaml retourne Hashtable/OrderedDictionary, .Clone() est shallow.
             # Mais comme on lit le fichier à chaque itération, c'est acceptable de modifier l'objet retourné.
             $composeData = $data.'docker-compose'
-            
+
+            foreach ($volumeName in (Get-NamedVolumeName -Volumes $composeData.volumes)) {
+                [void]$namedVolumes.Add($volumeName)
+            }
+
             # Section ports : publiée sur 127.0.0.1 si expose_ports, retirée sinon (service via Traefik)
             if ($composeData.Contains('ports')) {
                 if ($data.expose_ports -eq $true) {
@@ -561,7 +591,12 @@ networks:
     driver: bridge
     internal: true
 "@
-    
+
+    # Volumes nommés utilisés par les profils activés
+    if ($namedVolumes.Count -gt 0) {
+        $compose += "`n`nvolumes:`n" + (($namedVolumes | ForEach-Object { "  ${_}:" }) -join "`n")
+    }
+
     $compose | Out-File -FilePath $DockerComposeFile -Encoding UTF8
     Write-Host "`n✅ docker-compose.yml généré" -ForegroundColor Green
     

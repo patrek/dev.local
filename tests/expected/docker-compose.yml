@@ -183,6 +183,33 @@ services:
     networks:
       - traefik-network
 
+  # Service: storage
+  storage:
+    image: nginx:alpine
+    environment:
+      # Variables partagées (depuis config.yml)
+      - LOG_LEVEL=info
+      - TZ=America/Toronto
+      - API_GATEWAY_URL=https://api.example.com
+
+    container_name: storage
+    volumes:
+      - node_modules:/app/node_modules
+      - "node_modules:/opt/node_modules:ro"
+      - "./src:/app/src:ro"
+      - "${CACHE_DIR:-./cache}:/app/host-cache"
+      - /app/tmp
+      - type: volume
+        source: app-cache
+        target: /app/cache
+      - type: bind
+        source: ./config
+        target: /app/config
+    extra_hosts:
+      - "external-ip:host-gateway"
+    networks:
+      - traefik-network
+
   # Service: web
   web:
     image: nginx:alpine
@@ -216,3 +243,7 @@ networks:
   socket-proxy:
     driver: bridge
     internal: true
+
+volumes:
+  app-cache:
+  node_modules:

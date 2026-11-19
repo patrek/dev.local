@@ -1,4 +1,4 @@
-# Désactivé : absent de docker-compose.yml et sans route Traefik
+# Désactivé : absent de docker-compose.yml (son volume nommé aussi) et sans route Traefik
 name: disabled
 description: "Service désactivé"
 enabled: false
@@ -8,6 +8,8 @@ docker_profile: null
 docker-compose:
   image: nginx:alpine
   container_name: disabled
+  volumes:
+    - disabled_data:/data
 
 traefik:
   enabled: true

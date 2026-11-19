@@ -47,6 +47,20 @@ read_yaml_fields() {
     mapfile -t YAML_FIELDS < <(yq e "$expr" "$file" 2>/dev/null)
 }
 
+# Expression yq : noms des volumes nommés de la section docker-compose.volumes d'un profil,
+# un par ligne. Un volume nommé doit être déclaré dans la section volumes: de premier
+# niveau, sinon docker compose refuse le fichier.
+#   - syntaxe courte "nom:/chemin[:mode]" : la source est un nom de volume (au moins deux
+#     caractères, sinon Compose y voit une lettre de lecteur Windows), pas un chemin
+#     (./, /, ~, C:\) ni une variable (${VAR}) ;
+#   - syntaxe longue : type: volume avec une source.
+# Les montages de dossiers et les volumes anonymes ne sont pas retournés.
+NAMED_VOLUMES_EXPR='(.["docker-compose"].volumes | select(tag == "!!seq") | .[] | (
+    (select(tag == "!!str") | select(test("^[a-zA-Z0-9][a-zA-Z0-9_.-]+:")) | sub(":.*$"; "")),
+    (select(tag == "!!map" and .type == "volume") | .source
+        | select(tag == "!!str" and test("^[a-zA-Z0-9][a-zA-Z0-9_.-]*$")))
+))'
+
 # Extraire le nom de la clé YAML d'une ligne (ex: "  image: nginx" -> "image")
 # Usage: key_from_line "  image: nginx"
 key_from_line() {
@@ -498,16 +512,19 @@ EOF
     fi
     
     # Ajouter chaque service
+    local named_volumes=()
     for profile in "$PROFILES_DIR"/*.yml; do
         [ -f "$profile" ] || continue
-        
-        read_yaml_fields "$profile" .enabled .name .always_active .docker_profile .expose_ports
+
+        # Les volumes nommés suivent les cinq champs scalaires (même appel yq)
+        read_yaml_fields "$profile" .enabled .name .always_active .docker_profile .expose_ports "$NAMED_VOLUMES_EXPR"
         local enabled
         enabled=$(value_or_default "${YAML_FIELDS[0]}" true)
         if [ "$enabled" != "true" ]; then
             echo -e "  \033[90m⏭️  Ignoré (désactivé) : $(basename "$profile" .yml)\033[0m"
             continue
         fi
+        named_volumes+=("${YAML_FIELDS[@]:5}")
 
         local name
         name=$(value_or_default "${YAML_FIELDS[1]}" "$(basename "$profile" .yml)")
@@ -657,7 +674,15 @@ networks:
     driver: bridge
     internal: true
 EOF
-    
+
+    # Volumes nommés utilisés par les profils activés : déclarés une fois, triés
+    if [ "${#named_volumes[@]}" -gt 0 ]; then
+        {
+            printf '\nvolumes:\n'
+            printf '%s\n' "${named_volumes[@]}" | LC_ALL=C sort -u | sed 's/.*/  &:/'
+        } >> "$DOCKER_COMPOSE_FILE"
+    fi
+
     echo -e "\n\033[92m✅ docker-compose.yml généré\033[0m"
     
     # Générer aussi la config Traefik
