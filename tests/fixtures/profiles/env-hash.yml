@@ -1,0 +1,16 @@
+# Valeur entre guillemets contenant " #" : ce n'est pas un commentaire
+name: env-hash
+description: "Valeur avec un dièse"
+enabled: true
+always_active: true
+docker_profile: null
+
+docker-compose:
+  image: nginx:alpine
+  container_name: env-hash
+  environment:
+    - "HASH_MESSAGE=hello #world"
+    - HASH_PLAIN=value  # commentaire retiré
+
+traefik:
+  enabled: false

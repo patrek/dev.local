@@ -50,120 +50,26 @@ NAMED_VOLUMES_EXPR='(.["docker-compose"].volumes | select(tag == "!!seq") | .[] 
         | select(tag == "!!str" and test("^[a-zA-Z0-9][a-zA-Z0-9_.-]*$")))
 ))'
 
-# Extraire le nom de la clé YAML d'une ligne (ex: "  image: nginx" -> "image")
-# Usage: key_from_line "  image: nginx"
-key_from_line() {
-    echo "$1" | sed -E 's/:[[:space:]].*//; s/:[[:space:]]*$//'
-}
-
-# Insérer du contenu après la première ligne dont la clé correspond
-# Usage: insert_content_after_key "$text" "$content" "key1|key2"
-# Retourne le texte modifié via stdout
-insert_content_after_key() {
-    local text="$1"
-    local content="$2"
-    local keys_pattern="$3"
-    local result=""
-    local inserted=false
-
-    while IFS= read -r line; do
-        result="${result}${line}"$'\n'
-        if [ "$inserted" = false ] && echo "$line" | grep -qE "^ *(${keys_pattern})"; then
-            result="${result}${content}"$'\n'
-            inserted=true
-        fi
-    done <<< "$text"
-
-    printf '%s' "$result"
-}
-
-# Nettoyer un item YAML : supprime commentaires inline, espaces, et guillemets
-# Usage: clean_yaml_item "item" [strip_dash] [strip_quotes]
-clean_yaml_item() {
-    local item="$1"
-    [ -z "$item" ] && return
-    local strip_dash="${2:-false}"
-    local strip_quotes="${3:-false}"
-
-    # Supprimer les commentaires inline et les espaces
-    item=$(echo "$item" | sed -E 's/[[:space:]]+#.*//; s/^[[:space:]]+//; s/[[:space:]]+$//')
-
-    # Supprimer le tiret YAML si demandé
-    if [ "$strip_dash" = true ]; then
-      item=$(echo "$item" | sed -E 's/^-[[:space:]]*//')
-    fi
-
-    # Supprimer les guillemets si demandé
-    if [ "$strip_quotes" = true ]; then
-        item=$(echo "$item" | sed -E 's/^"(.*)"$/\1/')
-    fi
-
-    printf '%s' "$item"
-}
-
-# Block normalization
-# Usage: normalize_block "block" [indent_level] [output_format]
-#   indent_level: 2 or 4 (default: 4)
-#   output_format: "list" (default) or "map"
-# Converts any block format (list, map, raw key=value) to normalized output
-normalize_block() {
-    local block="$1"
-    local indent="${2:-4}"
-    local format="${3:-list}"
-    local result=""
-    local prefix
-    prefix=$(printf '%*s' "$indent" '')
-
-    [ -z "$block" ] && { printf '%s' "$result"; return; }
-
-    # Detect input format
-    local is_list_dash=false
-    local is_map=false
-    local is_list_raw=false
-
-    if echo "$block" | grep -qE "^[[:space:]]*[-][[:space:]]"; then
-        is_list_dash=true
-    elif echo "$block" | grep -qE "^[[:space:]]+[A-Z_]+:"; then
-        is_map=true
-    elif echo "$block" | sed 's/^[[:space:]]*//' | grep -qE "^[A-Z_]+=.+" || echo "$block" | sed 's/^[[:space:]]*//' | grep -qvE "^[[:space:]]*$|#|^[[:space:]]*[A-Za-z_]+:"; then
-        is_list_raw=true
-    fi
-
-    if [ "$is_list_dash" = true ] && [ "$format" = "list" ]; then
-        while IFS= read -r item; do
-            item=$(clean_yaml_item "$item" true false)
-            [ -n "$item" ] && result="${result}${prefix}- ${item}"$'\n'
-        done <<< "$block"
-    elif [ "$is_map" = true ]; then
-        if [ "$format" = "map" ]; then
-            while IFS= read -r item; do
-                item=$(clean_yaml_item "$item" false false)
-                [ -z "$item" ] && continue
-                local k v
-                k=$(echo "$item" | cut -d: -f1)
-                v=$(echo "$item" | cut -d: -f2- | sed -E 's/^[[:space:]]+//; s/^"(.*)"$/\1/')
-                [ -n "$k" ] && result="${result}${prefix}${k}: ${v}"$'\n'
-            done <<< "$block"
-        else
-            while IFS= read -r item; do
-                item=$(clean_yaml_item "$item" false false)
-                [ -z "$item" ] && continue
-                local k v
-                k=$(echo "$item" | cut -d: -f1)
-                v=$(echo "$item" | cut -d: -f2- | sed -E 's/^[[:space:]]+//')
-                v=$(clean_yaml_item "$v" false true)
-                [ -n "$k" ] && result="${result}${prefix}- ${k}=${v}"$'\n'
-            done <<< "$block"
-        fi
-    elif [ "$is_list_raw" = true ]; then
-        while IFS= read -r item; do
-            item=$(clean_yaml_item "$item" false false)
-            [ -n "$item" ] && result="${result}${prefix}- ${item}"$'\n'
-        done <<< "$block"
-    fi
-
-    printf '%s' "$result"
-}
+# Expression yq : section docker-compose d'un profil, réécrite par yq pour être traitée
+# ligne par ligne dans generate_docker_compose, quelle que soit l'écriture du profil :
+#   - indentation de 2 espaces et style bloc pour la section, ports et environment
+#     (jamais [..] ni {..} sur une ligne), clés de la section sans guillemets ;
+#   - environment toujours en liste : la forme map (CLE: valeur) devient CLE=valeur, dans
+#     l'ordre du fichier et avec le texte tel qu'il est écrit (CLE: sans valeur donne CLE=) ;
+#     une liste vide est créée si la clé est absente ;
+#   - ancres et alias résolus, commentaires retirés ;
+#   - ports et volumes absents (null) retirés : yq crée ces clés à la lecture d'un chemin
+#     absent, ici et dans NAMED_VOLUMES_EXPR.
+COMPOSE_SECTION_EXPR='(.["docker-compose"] | select(tag == "!!map") | explode(.)
+    | (.[] | key) style = ""
+    | with(.environment | select(tag == "!!null"); . = [])
+    | with(.environment | select(tag == "!!map");
+        . = (to_entries | map((.key | tostring) + "=" + (.value | with(select(tag == "!!null"); . = "") | tostring))))
+    | (., (.ports, .environment | select(tag == "!!seq"))) style = ""
+    | ... comments = ""
+    | del((.ports, .volumes) | select(tag == "!!null")))'
+# Ligne qui précède la section docker-compose dans la sortie de yq (jamais un nom de volume)
+COMPOSE_SECTION_MARKER='#--docker-compose--'
 
 # Lie une entrée de port (syntaxe courte) à 127.0.0.1 si elle ne précise pas d'IP hôte.
 #   "8090:80" -> "127.0.0.1:8090:80"      "80" -> "127.0.0.1::80"
@@ -505,15 +411,16 @@ EOF
     for profile in "$PROFILES_DIR"/*.yml; do
         [ -f "$profile" ] || continue
 
-        # Les volumes nommés suivent les cinq champs scalaires (même appel yq)
-        read_yaml_fields "$profile" .enabled .name .always_active .docker_profile .expose_ports "$NAMED_VOLUMES_EXPR"
+        # Les volumes nommés puis la section docker-compose normalisée suivent les cinq
+        # champs scalaires (même appel yq) ; un marqueur sépare ces deux listes de lignes
+        read_yaml_fields "$profile" .enabled .name .always_active .docker_profile .expose_ports \
+            "$NAMED_VOLUMES_EXPR" "\"$COMPOSE_SECTION_MARKER\"" "$COMPOSE_SECTION_EXPR"
         local enabled
         enabled=$(value_or_default "${YAML_FIELDS[0]}" true)
         if [ "$enabled" != "true" ]; then
             echo -e "  \033[90m⏭️  Ignoré (désactivé) : $(basename "$profile" .yml)\033[0m"
             continue
         fi
-        named_volumes+=("${YAML_FIELDS[@]:5}")
 
         local name
         name=$(value_or_default "${YAML_FIELDS[1]}" "$(basename "$profile" .yml)")
@@ -536,102 +443,73 @@ EOF
             echo -e "    \033[90m📌 $shared_count variable(s) partagée(s)\033[0m"
         fi
 
-        # Extraire la section docker-compose:
-        local compose_section
-        compose_section=$(sed -n '/^docker-compose:/,/^[a-z]/{//!p}' "$profile")
+        # La section docker-compose normalisée par yq suit le marqueur, les volumes nommés le précèdent
+        local compose_lines=()
+        local field_index
+        for field_index in "${!YAML_FIELDS[@]}"; do
+            if [ "$field_index" -ge 5 ] && [ "${YAML_FIELDS[$field_index]}" = "$COMPOSE_SECTION_MARKER" ]; then
+                named_volumes+=("${YAML_FIELDS[@]:5:$((field_index - 5))}")
+                compose_lines=("${YAML_FIELDS[@]:$((field_index + 1))}")
+                break
+            fi
+        done
 
-        # Traiter la section environment pour injecter les variables partagées
-        local filtered_compose=""
-        local in_ports=false
+        # Recopier la section dans le service. Une ligne non indentée est une clé de la section ;
+        # les lignes indentées qui la suivent sont sa valeur.
+        local service_body=""
+        local current_key=""
         local ports_ignored=false
-        local environment_block=""
-        local environment_indent=""
+        local line
+        for line in "${compose_lines[@]}"; do
+            if [ -n "$line" ] && [[ "$line" != " "* ]]; then
+                current_key="${line%%:*}"
 
-        while IFS= read -r line; do
-            # Gérer la section ports : publiée sur 127.0.0.1 si expose_ports, retirée sinon
-            if echo "$line" | grep -q "^  ports:"; then
-                in_ports=true
-                if [ "$expose_ports" = "true" ]; then
-                    filtered_compose="${filtered_compose}${line}"$'\n'
-                else
+                if [ "$current_key" = "ports" ] && [ "$expose_ports" != "true" ]; then
                     ports_ignored=true
                 fi
-                continue
-            fi
-            if [ "$in_ports" = true ]; then
-                if echo "$line" | grep -q "^    "; then
-                    if [ "$expose_ports" = "true" ]; then
-                        filtered_compose="${filtered_compose}$(bind_port_to_localhost "$line")"$'\n'
+
+                # environment est toujours une liste : "environment:" suivi de ses éléments,
+                # ou "environment: []" si le profil n'a aucune variable
+                if [ "$line" = "environment:" ] || [ "$line" = "environment: []" ]; then
+                    # Sans variable d'aucune sorte, le service n'a pas de clé environment
+                    [ "$line" = "environment: []" ] && [ -z "$shared_env_vars" ] && continue
+
+                    service_body+="    environment:"$'\n'
+                    if [ -n "$shared_env_vars" ]; then
+                        service_body+="      # Variables partagées (depuis config.yml)"$'\n'
+                        local var
+                        while IFS= read -r var; do
+                            [ -n "$var" ] && service_body+="      - ${var}"$'\n'
+                        done <<< "$shared_env_vars"
+                        if [ "$line" = "environment:" ]; then
+                            service_body+="      # Variables exclusives du service"$'\n'
+                        fi
                     fi
                     continue
-                else
-                    in_ports=false
                 fi
             fi
 
-            # Détecter et capturer le bloc environment
-            if echo "$line" | grep -q "^  environment:"; then
-                environment_indent=$(echo "$line" | sed 's/[^ ].*//')
-                environment_block=""
-                continue
-            fi
-
-            # Capturer les items environment (indentés)
-            if [ -n "$environment_indent" ]; then
-                local line_indent
-                line_indent=$(echo "$line" | sed 's/[^ ].*//')
-                if [ "${#line_indent}" -gt "${#environment_indent}" ] || echo "$line" | grep -q "^[[:space:]]*[-]"; then
-                    environment_block="${environment_block}${line}"$'\n'
-                    continue
-                else
-                    environment_indent=""
+            # Section ports : publiée sur 127.0.0.1 si expose_ports, retirée sinon
+            if [ "$current_key" = "ports" ]; then
+                [ "$expose_ports" = "true" ] || continue
+                # Éléments de la liste ; les lignes plus indentées (syntaxe longue) sont conservées
+                if [[ "$line" == "  - "* ]]; then
+                    line=$(bind_port_to_localhost "$line")
                 fi
             fi
 
-            filtered_compose="${filtered_compose}${line}"$'\n'
-        done <<< "$compose_section"
+            if [ -n "$line" ]; then
+                service_body+="    ${line}"$'\n'
+            else
+                service_body+=$'\n'
+            fi
+        done
 
         if [ "$ports_ignored" = true ]; then
             echo -e "    \033[90m🔒 Ports non publiés (expose_ports: true pour les publier sur 127.0.0.1)\033[0m"
         fi
 
-        # Gérer le cas où le fichier se termine dans un bloc environment
-        if [ -n "$environment_indent" ] && [ -n "$environment_block" ]; then
-            environment_block=$(normalize_block "$environment_block" 4 "list")
-            environment_indent=""
-        fi
-
-        # Construire et injecter le bloc environment complet
-        if [ -n "$shared_env_vars" ] || [ -n "$environment_block" ]; then
-            local env_body=""
-            if [ -n "$shared_env_vars" ]; then
-                env_body+="    # Variables partagées (depuis config.yml)"$'\n'
-                while IFS= read -r var; do
-                    [ -n "$var" ] && env_body+="    - ${var}"$'\n'
-                done <<< "$shared_env_vars"
-            fi
-            local svc_items=""
-            if [ -n "$environment_block" ]; then
-                svc_items=$(normalize_block "$environment_block")
-                if [ -n "$svc_items" ]; then
-                    if [ -n "$shared_env_vars" ]; then
-                        env_body+="    # Variables exclusives du service"$'\n'
-                    fi
-                    env_body+="${svc_items}"$'\n'
-                fi
-            fi
-
-            local complete_env_section
-            complete_env_section="  environment:"$'\n'"${env_body}"
-            filtered_compose=$(insert_content_after_key "$filtered_compose" "$complete_env_section" "container_name|image")
-        fi
-
-        # Ajouter 2 espaces d'indentation
-        local indented
-        indented=$(echo "$filtered_compose" | sed 's/^  /    /')
-
-        # Nettoyer l'indentation (retirer les lignes vides en fin)
-        indented=$(echo "$indented" | sed -e :a -e '/^\s*$/d;N;ba')
+        local indented="${service_body%$'\n'}"
 
         # Section profiles si not always_active ET docker_profile n'est pas null/vide
         local profiles_section=""

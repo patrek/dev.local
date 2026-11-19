@@ -66,6 +66,7 @@ services:
   # Service: api
   api:
     image: ${API_IMAGE:-nginx}:${API_TAG:-alpine}
+    container_name: api
     environment:
       # Variables partagées (depuis config.yml)
       - LOG_LEVEL=info
@@ -75,11 +76,26 @@ services:
       # Variables exclusives du service
       - SERVICE_NAME=api
       - API_KEY=${API_KEY:-changeme}
-
-    container_name: api
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:80/"]
       interval: 30s
+    extra_hosts:
+      - "external-ip:host-gateway"
+    networks:
+      - traefik-network
+
+  # Service: env-hash
+  env-hash:
+    image: nginx:alpine
+    container_name: env-hash
+    environment:
+      # Variables partagées (depuis config.yml)
+      - LOG_LEVEL=info
+      - TZ=America/Toronto
+      - API_GATEWAY_URL=https://api.example.com
+      # Variables exclusives du service
+      - "HASH_MESSAGE=hello #world"
+      - HASH_PLAIN=value
     extra_hosts:
       - "external-ip:host-gateway"
     networks:
@@ -94,16 +110,84 @@ services:
     networks:
       - traefik-network
 
-  # Service: plain
-  plain:
+  # Service: indent4-exposed
+  indent4-exposed:
     image: nginx:alpine
+    container_name: indent4-exposed
+    ports:
+      - "127.0.0.1:8024:80"
     environment:
       # Variables partagées (depuis config.yml)
       - LOG_LEVEL=info
       - TZ=America/Toronto
       - API_GATEWAY_URL=https://api.example.com
+    extra_hosts:
+      - "external-ip:host-gateway"
+    networks:
+      - traefik-network
 
+  # Service: indent4
+  indent4:
+    image: nginx:alpine
+    container_name: indent4
+    environment:
+      # Variables partagées (depuis config.yml)
+      - LOG_LEVEL=info
+      - TZ=America/Toronto
+      - API_GATEWAY_URL=https://api.example.com
+      # Variables exclusives du service
+      - INDENT_MODE=four
+    healthcheck:
+      test: ["CMD", "true"]
+      interval: 30s
+    extra_hosts:
+      - "external-ip:host-gateway"
+    networks:
+      - traefik-network
+
+  # Service: plain
+  plain:
+    image: nginx:alpine
     container_name: plain
+    environment:
+      # Variables partagées (depuis config.yml)
+      - LOG_LEVEL=info
+      - TZ=America/Toronto
+      - API_GATEWAY_URL=https://api.example.com
+    extra_hosts:
+      - "external-ip:host-gateway"
+    networks:
+      - traefik-network
+
+  # Service: ports-flow-hidden
+  ports-flow-hidden:
+    image: nginx:alpine
+    container_name: ports-flow-hidden
+    environment:
+      # Variables partagées (depuis config.yml)
+      - LOG_LEVEL=info
+      - TZ=America/Toronto
+      - API_GATEWAY_URL=https://api.example.com
+    extra_hosts:
+      - "external-ip:host-gateway"
+    networks:
+      - traefik-network
+
+  # Service: ports-flow
+  ports-flow:
+    image: nginx:alpine
+    container_name: ports-flow
+    ports:
+      - "127.0.0.1:8020:80"
+      - '127.0.0.1:${FLOW_ALT_PORT:-8021}:81'
+    environment:
+      # Variables partagées (depuis config.yml)
+      - LOG_LEVEL=info
+      - TZ=America/Toronto
+      - API_GATEWAY_URL=https://api.example.com
+      # Variables exclusives du service
+      - FLOW_MODE=test
+      - "FLOW_LABEL=en flux"
     extra_hosts:
       - "external-ip:host-gateway"
     networks:
@@ -112,6 +196,7 @@ services:
   # Service: secrets-auto
   secrets-auto:
     image: nginx:${AUTO_IMAGE_TAG:-alpine}
+    container_name: secrets-auto
     environment:
       # Variables partagées (depuis config.yml)
       - LOG_LEVEL=info
@@ -122,8 +207,6 @@ services:
       - AUTO_BARE=${AUTO_BARE}
       - AUTO_URL=https://${AUTO_USER:-user}:${AUTO_PASSWORD:-}@example.com
       - AUTO_LOWER=${auto_lower:-ignore}
-
-    container_name: secrets-auto
     extra_hosts:
       - "external-ip:host-gateway"
     networks:
@@ -132,6 +215,7 @@ services:
   # Service: secrets-empty
   secrets-empty:
     image: nginx:alpine
+    container_name: secrets-empty
     environment:
       # Variables partagées (depuis config.yml)
       - LOG_LEVEL=info
@@ -139,8 +223,6 @@ services:
       - API_GATEWAY_URL=https://api.example.com
       # Variables exclusives du service
       - EMPTY_SECTION=${EMPTY_SECTION:-ignore}
-
-    container_name: secrets-empty
     extra_hosts:
       - "external-ip:host-gateway"
     networks:
@@ -149,6 +231,7 @@ services:
   # Service: secrets-explicit
   secrets-explicit:
     image: nginx:alpine
+    container_name: secrets-explicit
     environment:
       # Variables partagées (depuis config.yml)
       - LOG_LEVEL=info
@@ -157,8 +240,6 @@ services:
       # Variables exclusives du service
       - EXPLICIT_FIRST=${EXPLICIT_FIRST:-changeme}
       - EXPLICIT_UNDECLARED=${EXPLICIT_UNDECLARED:-ignore}
-
-    container_name: secrets-explicit
     extra_hosts:
       - "external-ip:host-gateway"
     networks:
@@ -167,6 +248,7 @@ services:
   # Service: secrets-map
   secrets-map:
     image: nginx:alpine
+    container_name: secrets-map
     environment:
       # Variables partagées (depuis config.yml)
       - LOG_LEVEL=info
@@ -176,8 +258,6 @@ services:
       - MAP_BARE=${MAP_BARE}
       - MAP_PLAIN=value
       - MAP_TOKEN=${MAP_TOKEN:-changeme}
-
-    container_name: secrets-map
     extra_hosts:
       - "external-ip:host-gateway"
     networks:
@@ -186,12 +266,6 @@ services:
   # Service: storage
   storage:
     image: nginx:alpine
-    environment:
-      # Variables partagées (depuis config.yml)
-      - LOG_LEVEL=info
-      - TZ=America/Toronto
-      - API_GATEWAY_URL=https://api.example.com
-
     container_name: storage
     volumes:
       - node_modules:/app/node_modules
@@ -205,6 +279,11 @@ services:
       - type: bind
         source: ./config
         target: /app/config
+    environment:
+      # Variables partagées (depuis config.yml)
+      - LOG_LEVEL=info
+      - TZ=America/Toronto
+      - API_GATEWAY_URL=https://api.example.com
     extra_hosts:
       - "external-ip:host-gateway"
     networks:
@@ -213,6 +292,11 @@ services:
   # Service: web
   web:
     image: nginx:alpine
+    container_name: web
+    ports:
+      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:${WEB_ALT_PORT:-3001}:3001"
+      - "0.0.0.0:3002:3002"
     environment:
       # Variables partagées (depuis config.yml)
       - LOG_LEVEL=info
@@ -221,12 +305,6 @@ services:
       # Variables exclusives du service
       - API_BASE_URL=http://localhost:8080/api
       - WEB_MODE=test
-
-    container_name: web
-    ports:
-      - "127.0.0.1:3000:3000"
-      - "127.0.0.1:${WEB_ALT_PORT:-3001}:3001"
-      - "0.0.0.0:3002:3002"
     extra_hosts:
       - "external-ip:host-gateway"
     networks:

@@ -70,6 +70,33 @@ check_golden() {
     fi
 }
 
+# Aucun port ne doit être publié sur toutes les interfaces par défaut : chaque entrée
+# d'une section ports commence par 127.0.0.1:, sauf l'IP explicite de la fixture web.
+# Une section ports qui n'est pas écrite en liste (ports: [...]) est aussi une erreur.
+check_ports_bound_to_localhost() {
+    local compose_file="$1"
+    local explicit_ip_port="0.0.0.0:3002:3002"
+
+    local unbound
+    unbound=$(awk -v allowed="$explicit_ip_port" '
+        /^    ports:/ { in_ports = ($0 == "    ports:"); if (!in_ports) print; next }
+        in_ports && /^      - / {
+            port = $0
+            sub(/^      - /, "", port)
+            gsub(/["\047]/, "", port)
+            if (port !~ /^127\.0\.0\.1:/ && port != allowed) print
+            next
+        }
+        { in_ports = 0 }
+    ' "$compose_file")
+
+    if [ -z "$unbound" ]; then
+        pass "ports publiés sur 127.0.0.1 uniquement"
+    else
+        fail "ports publiés sur 127.0.0.1 uniquement" "$unbound"
+    fi
+}
+
 test_generate() {
     echo "Génération"
     local dir
@@ -84,6 +111,8 @@ test_generate() {
 
     check_golden "docker-compose.yml conforme" "$dir/docker-compose.yml" "$EXPECTED/docker-compose.yml"
     check_golden "traefik/dynamic.yml conforme" "$dir/traefik/dynamic.yml" "$EXPECTED/traefik-dynamic.yml"
+
+    check_ports_bound_to_localhost "$dir/docker-compose.yml"
 
     if command -v docker >/dev/null 2>&1; then
         if output=$(cd "$dir" && docker compose config --quiet 2>&1); then

@@ -1,0 +1,14 @@
+# Ports en flux sans expose_ports : la section ports est retirée
+name: ports-flow-hidden
+description: "Ports en flux non publiés"
+enabled: true
+always_active: true
+docker_profile: null
+
+docker-compose:
+  image: nginx:alpine
+  container_name: ports-flow-hidden
+  ports: ["8022:80"]
+
+traefik:
+  enabled: false
