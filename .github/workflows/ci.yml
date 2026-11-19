@@ -55,22 +55,19 @@ jobs:
         run: tests/run-tests.sh
 
   test-powershell:
-    name: Génération PowerShell
+    name: Tests PowerShell
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Installer powershell-yaml
         shell: pwsh
         run: Install-Module powershell-yaml -Force -Scope CurrentUser
-      - name: Générer avec manage-profiles.ps1
+      - name: Générer et valider avec les scripts PowerShell
         run: tests/compare-shells.sh --powershell-only
 
   shell-parity:
-    name: Parité Bash / PowerShell (informatif)
+    name: Parité Bash / PowerShell
     runs-on: ubuntu-latest
-    # Les deux implémentations ne produisent pas encore la même configuration :
-    # ce job montre les écarts sans bloquer la fusion.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - name: Installer powershell-yaml

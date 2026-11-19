@@ -1,16 +1,16 @@
 #!/bin/bash
-# Génère les fixtures avec manage-profiles.ps1, puis compare le résultat à celui de
-# manage-profiles.sh.
+# Teste les scripts PowerShell sur les fixtures, puis compare la génération de
+# manage-profiles.ps1 à celle de manage-profiles.sh.
 #
 # Usage :
-#   tests/compare-shells.sh                     Génération PowerShell + comparaison avec Bash
-#   tests/compare-shells.sh --powershell-only   Génération PowerShell uniquement
+#   tests/compare-shells.sh                     Tests PowerShell + comparaison avec Bash
+#   tests/compare-shells.sh --powershell-only   Tests PowerShell uniquement
 #
 # La comparaison porte sur la sortie de "docker compose config" : elle ignore la mise en
 # forme et les commentaires, et ne montre que les différences de configuration réelles.
 #
 # Prérequis : docker, pwsh et le module PowerShell powershell-yaml.
-# Codes de sortie : 0 succès, 1 génération PowerShell en échec, 2 prérequis manquant,
+# Codes de sortie : 0 succès, 1 test PowerShell en échec, 2 prérequis manquant,
 #                   3 différences entre Bash et PowerShell.
 
 set -u
@@ -58,7 +58,7 @@ resolved_config() {
 
 echo "Génération avec PowerShell"
 ps_dir=$(new_workdir powershell manage-profiles.ps1 validate-profiles.ps1)
-if ! (cd "$ps_dir" && env -u COMPOSE_PROJECT_NAME pwsh -NoLogo -NoProfile -File ./manage-profiles.ps1 -Action generate); then
+if ! (cd "$ps_dir" && pwsh -NoLogo -NoProfile -File ./manage-profiles.ps1 -Action generate); then
     echo "ECHEC : manage-profiles.ps1 generate a échoué"
     exit 1
 fi
@@ -74,11 +74,38 @@ if ! (cd "$ps_dir" && docker compose config --quiet); then
 fi
 echo "  ok    génération PowerShell acceptée par docker compose"
 
+echo "Validation avec PowerShell"
+if ! (cd "$ps_dir" && pwsh -NoLogo -NoProfile -File ./validate-profiles.ps1 >/dev/null 2>&1); then
+    echo "ECHEC : validate-profiles.ps1 refuse les fixtures valides"
+    exit 1
+fi
+echo "  ok    validate-profiles.ps1 accepte les fixtures"
+
+# Chaque fichier de fixtures/invalid commence par "# expect: <texte>" :
+# la validation doit échouer et afficher ce texte.
+for fixture in "$FIXTURES/invalid/"*.yml; do
+    name=$(basename "$fixture" .yml)
+    expected_message=$(sed -n '1s/^# expect: //p' "$fixture")
+    invalid_dir=$(new_workdir "powershell-invalid-$name" validate-profiles.ps1)
+    cp "$fixture" "$invalid_dir/profiles/zz-$name.yml"
+
+    output=$(cd "$invalid_dir" && pwsh -NoLogo -NoProfile -File ./validate-profiles.ps1 2>&1)
+    validation_status=$?
+    if [ "$validation_status" -eq 0 ]; then
+        echo "ECHEC : $name est accepté par validate-profiles.ps1"
+        exit 1
+    elif ! echo "$output" | grep -qF "$expected_message"; then
+        echo "ECHEC : $name est rejeté sans le message attendu : $expected_message"
+        exit 1
+    fi
+    echo "  ok    $name est rejeté"
+done
+
 [ "$POWERSHELL_ONLY" = true ] && exit 0
 
 echo "Génération avec Bash"
 sh_dir=$(new_workdir bash manage-profiles.sh validate-profiles.sh lib)
-if ! (cd "$sh_dir" && env -u COMPOSE_PROJECT_NAME bash ./manage-profiles.sh generate >/dev/null); then
+if ! (cd "$sh_dir" && bash ./manage-profiles.sh generate >/dev/null); then
     echo "ECHEC : manage-profiles.sh generate a échoué"
     exit 1
 fi
