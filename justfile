@@ -12,7 +12,7 @@ manage := if os() == "windows" { ".\\manage-profiles.ps1" } else { "./manage-pro
 
 # Services Docker
 
-[doc("Démarrer tous les services")]
+[doc("Démarrer les services de base (Traefik, Dozzle, profils always_active)")]
 [group("docker")]
 start:
     {{launch}} start

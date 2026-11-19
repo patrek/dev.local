@@ -1,4 +1,4 @@
-# Assurer que les fichiers shell ont le bit exécutable
+# Fins de ligne LF pour les scripts shell (le bit exécutable se règle avec git update-index --chmod=+x)
 *.sh text eol=lf
 
 # Normaliser les fins de ligne

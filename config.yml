@@ -46,8 +46,9 @@ shared_env:
   # Déclarez un groupe dédié avec vos variables
   demo_only:
     - DEMO_ONLY_VAR=demo-only-value
-    # Exemple: renommer/référencer une variable existante
-    - DEMO_API_GATEWAY_URL=${API_GATEWAY_URL}
+    # Les valeurs sont copiées telles quelles : une référence ${VAR} serait résolue par
+    # Docker Compose depuis le shell, .env ou les secrets, pas depuis les autres variables partagées
+    - DEMO_API_GATEWAY_URL=https://api.demo.local
     # - API_GATEWAY_URL=https://api.demo.local  # <- exemple d'override spécifique à demo
 
 # Configuration de l'injection des variables partagées
