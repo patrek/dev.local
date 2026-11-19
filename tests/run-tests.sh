@@ -96,6 +96,22 @@ test_generate() {
     fi
 }
 
+# list-secrets exécute la détection de sync-secrets sans SOPS ni déchiffrement
+test_secret_detection() {
+    echo "Détection des secrets"
+    local dir
+    dir=$(new_workdir secrets)
+
+    local output
+    if ! output=$(bash "$dir/manage-profiles.sh" list-secrets 2>&1); then
+        fail "manage-profiles.sh list-secrets" "$output"
+        return
+    fi
+    printf '%s\n' "$output" > "$dir/secrets.txt"
+
+    check_golden "variables de secrets détectées conformes" "$dir/secrets.txt" "$EXPECTED/secrets.txt"
+}
+
 test_valid_profiles() {
     echo "Validation des profils valides"
     local dir
@@ -139,6 +155,7 @@ test_invalid_profiles() {
 }
 
 test_generate
+test_secret_detection
 if [ "$UPDATE" = false ]; then
     test_valid_profiles
     test_invalid_profiles

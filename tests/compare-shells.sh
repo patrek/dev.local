@@ -1,6 +1,6 @@
 #!/bin/bash
 # Teste les scripts PowerShell sur les fixtures, puis compare la génération de
-# manage-profiles.ps1 à celle de manage-profiles.sh.
+# manage-profiles.ps1 et sa détection des secrets à celles de manage-profiles.sh.
 #
 # Usage :
 #   tests/compare-shells.sh                     Tests PowerShell + comparaison avec Bash
@@ -74,6 +74,19 @@ if ! (cd "$ps_dir" && docker compose config --quiet); then
 fi
 echo "  ok    génération PowerShell acceptée par docker compose"
 
+# list-secrets exécute la détection de sync-secrets sans SOPS ni déchiffrement
+echo "Détection des secrets avec PowerShell"
+if ! (cd "$ps_dir" && pwsh -NoLogo -NoProfile -File ./manage-profiles.ps1 -Action list-secrets) > "$TMP_ROOT/secrets.powershell.raw"; then
+    echo "ECHEC : manage-profiles.ps1 list-secrets a échoué"
+    exit 1
+fi
+tr -d '\r' < "$TMP_ROOT/secrets.powershell.raw" > "$TMP_ROOT/secrets.powershell.txt"
+if ! diff -u --label attendu --label powershell "$ROOT/tests/expected/secrets.txt" "$TMP_ROOT/secrets.powershell.txt"; then
+    echo "ECHEC : les variables de secrets détectées par PowerShell diffèrent de tests/expected/secrets.txt"
+    exit 1
+fi
+echo "  ok    variables de secrets détectées conformes"
+
 echo "Validation avec PowerShell"
 if ! (cd "$ps_dir" && pwsh -NoLogo -NoProfile -File ./validate-profiles.ps1 >/dev/null 2>&1); then
     echo "ECHEC : validate-profiles.ps1 refuse les fixtures valides"
@@ -129,6 +142,17 @@ if diff -u --label bash --label powershell <(strip_comments "$sh_dir/traefik/dyn
     echo "  ok    traefik/dynamic.yml équivalent"
 else
     echo "  DIFF  traefik/dynamic.yml"
+    status=3
+fi
+
+if ! (cd "$sh_dir" && bash ./manage-profiles.sh list-secrets) > "$TMP_ROOT/secrets.bash.txt"; then
+    echo "ECHEC : manage-profiles.sh list-secrets a échoué"
+    exit 1
+fi
+if diff -u --label bash --label powershell "$TMP_ROOT/secrets.bash.txt" "$TMP_ROOT/secrets.powershell.txt"; then
+    echo "  ok    mêmes variables de secrets détectées"
+else
+    echo "  DIFF  variables de secrets détectées"
     status=3
 fi
 
