@@ -842,7 +842,7 @@ sync_secrets() {
                         
                         if [ -n "$secret_name" ] && [ -z "${secret_vars[$secret_name]}" ]; then
                             secret_vars["$secret_name"]="$secret_default"
-                            echo -e "  \033[90m📌 [$profile_name] $secret_name = $secret_default ($secret_desc)\033[0m"
+                            echo -e "  \033[90m📌 [$profile_name] $secret_name ($secret_desc)\033[0m"
                         fi
                     elif echo "$line" | grep -qE "^[a-z]"; then
                         break
@@ -861,7 +861,7 @@ sync_secrets() {
             
             if [ -n "$var_name" ] && [ -z "${secret_vars[$var_name]}" ]; then
                 secret_vars["$var_name"]="$default_value"
-                echo -e "  \033[90m📌 [$profile_name] $var_name = $default_value (auto-détecté)\033[0m"
+                echo -e "  \033[90m📌 [$profile_name] $var_name (auto-détecté)\033[0m"
             fi
         done < <(grep -o '\${[A-Z_][A-Z0-9_]*:-[^}]*}' "$profile" 2>/dev/null || true)
     done
@@ -878,19 +878,21 @@ sync_secrets() {
     local secrets_content=""
     
     if [ -f "$SECRETS_FILE" ]; then
-        secrets_content=$(sops -d "$SECRETS_FILE" 2>&1)
-        if [ $? -eq 0 ]; then
-            while IFS='=' read -r key value; do
-                if [[ "$key" =~ ^[A-Z_][A-Z0-9_]*$ ]]; then
-                    existing_secrets["$key"]="$value"
-                fi
-            done <<< "$secrets_content"
-            echo -e "\n  \033[92m✅ Fichier secrets.env déchiffré (${#existing_secrets[@]} variables existantes)\033[0m"
-        else
-            echo -e "\033[93mImpossible de déchiffrer secrets.env. Création d'un nouveau fichier.\033[0m"
+        # Ne pas continuer si le déchiffrement échoue : le fichier existant serait écrasé
+        if ! secrets_content=$(sops -d "$SECRETS_FILE"); then
+            echo -e "\033[91mImpossible de déchiffrer $SECRETS_FILE - aucune modification effectuée.\033[0m"
+            echo -e "\033[93mVérifiez votre clé SOPS, ou supprimez le fichier pour repartir de zéro.\033[0m"
+            return 1
         fi
+
+        while IFS='=' read -r key value; do
+            if [[ "$key" =~ ^[A-Z_][A-Z0-9_]*$ ]]; then
+                existing_secrets["$key"]="$value"
+            fi
+        done <<< "$secrets_content"
+        echo -e "\n  \033[92m✅ Fichier secrets.env déchiffré (${#existing_secrets[@]} variables existantes)\033[0m"
     fi
-    
+
     # Identifier les nouvelles variables
     declare -A new_vars
     for var in "${!secret_vars[@]}"; do
@@ -906,7 +908,7 @@ sync_secrets() {
     
     echo -e "\n  \033[93m📝 Variables manquantes à ajouter:\033[0m"
     for var in "${!new_vars[@]}"; do
-        echo -e "     \033[90m- $var=${new_vars[$var]}\033[0m"
+        echo -e "     \033[90m- $var\033[0m"
     done
     
     # Demander confirmation
@@ -924,20 +926,14 @@ sync_secrets() {
         new_content="${new_content}${var}=${new_vars[$var]}"$'\n'
     done
     
-    # Sauvegarder temporairement en clair
-    local temp_file="${SECRETS_FILE}.tmp"
-    echo -n "$new_content" > "$temp_file"
-    
-    # Chiffrer avec SOPS
-    # Note: On passe --filename-override secrets.env pour que SOPS applique les règles de .sops.yaml
-    if output=$(sops -e --filename-override "$SECRETS_FILE" "$temp_file" 2>&1); then
-        echo "$output" > "$SECRETS_FILE"
-        rm -f "$temp_file"
+    # Chiffrer via stdin : le contenu en clair n'est jamais écrit sur disque.
+    # --filename-override fait appliquer à SOPS les règles .sops.yaml de secrets.env
+    local encrypted
+    if encrypted=$(printf '%s' "$new_content" | sops -e --filename-override "$SECRETS_FILE" /dev/stdin); then
+        printf '%s\n' "$encrypted" > "$SECRETS_FILE"
         echo -e "\n  \033[92m✅ secrets.env mis à jour et rechiffré (${#new_vars[@]} variable(s) ajoutée(s))\033[0m"
     else
-        echo -e "\033[91mErreur lors du chiffrement\033[0m"
-        echo "$output"
-        rm -f "$temp_file"
+        echo -e "\033[91mErreur lors du chiffrement - $SECRETS_FILE n'a pas été modifié\033[0m"
         return 1
     fi
 }

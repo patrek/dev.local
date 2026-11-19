@@ -705,6 +705,28 @@ http:
     Write-Host "✅ traefik/dynamic.yml généré" -ForegroundColor Green
 }
 
+# Chiffre un contenu dotenv avec SOPS et retourne le texte chiffré ($null en cas d'échec).
+# Le contenu en clair passe par un fichier temporaire privé, hors du dépôt, toujours supprimé
+# (SOPS ne lit pas l'entrée standard de façon portable sous Windows).
+# -TargetFile fait appliquer à SOPS les règles .sops.yaml du fichier final.
+function Protect-SecretsContent {
+    param(
+        [string]$Content,
+        [string]$TargetFile
+    )
+
+    $tempFile = [System.IO.Path]::GetTempFileName()
+    try {
+        [System.IO.File]::WriteAllText($tempFile, $Content, (New-Object System.Text.UTF8Encoding $false))
+        $encrypted = & sops -e --filename-override $TargetFile --input-type dotenv --output-type dotenv $tempFile
+        if ($LASTEXITCODE -ne 0) { return $null }
+        return ($encrypted -join "`n")
+    }
+    finally {
+        Remove-Item $tempFile -Force -ErrorAction SilentlyContinue
+    }
+}
+
 # Fonction pour synchroniser secrets.env avec les profils
 function Sync-Secrets {
     Write-Host "`n🔄 SYNCHRONISATION DES SECRETS" -ForegroundColor Cyan
@@ -757,7 +779,7 @@ function Sync-Secrets {
                     
                     if (-not $secretVars.ContainsKey($secretName)) {
                         $secretVars[$secretName] = $secretDefault
-                        Write-Host "  📌 [$profileName] $secretName = $secretDefault ($secretDesc)" -ForegroundColor Gray
+                        Write-Host "  📌 [$profileName] $secretName ($secretDesc)" -ForegroundColor Gray
                     }
                 }
             }
@@ -781,7 +803,7 @@ function Sync-Secrets {
                         
                         if (-not $secretVars.ContainsKey($varName)) {
                             $secretVars[$varName] = $defaultValue
-                            Write-Host "  📌 [$profileName] $varName = $defaultValue (auto-détecté)" -ForegroundColor DarkGray
+                            Write-Host "  📌 [$profileName] $varName (auto-détecté)" -ForegroundColor DarkGray
                         }
                     }
                 }
@@ -803,7 +825,7 @@ function Sync-Secrets {
     if (Test-Path $SecretsFile) {
         try {
             # Déchiffrer et lire
-            $decrypted = sops -d $SecretsFile 2>&1
+            $decrypted = sops -d $SecretsFile
             if ($LASTEXITCODE -eq 0) {
                 $secretsContent = $decrypted
                 foreach ($line in $decrypted -split "`n") {
@@ -814,7 +836,9 @@ function Sync-Secrets {
                 Write-Host "`n  ✅ Fichier secrets.env déchiffré ($($existingSecrets.Count) variables existantes)" -ForegroundColor Green
             }
             else {
-                Write-Warning "Impossible de déchiffrer secrets.env. Création d'un nouveau fichier."
+                # Ne pas continuer : le fichier existant serait écrasé
+                Write-Error "Impossible de déchiffrer $SecretsFile - aucune modification effectuée. Vérifiez votre clé SOPS, ou supprimez le fichier pour repartir de zéro."
+                return
             }
         }
         catch {
@@ -837,7 +861,7 @@ function Sync-Secrets {
     
     Write-Host "`n  📝 Variables manquantes à ajouter:" -ForegroundColor Yellow
     foreach ($var in $newVars.Keys) {
-        Write-Host "     - $var=$($newVars[$var])" -ForegroundColor Gray
+        Write-Host "     - $var" -ForegroundColor Gray
     }
     
     # Demander confirmation
@@ -862,52 +886,14 @@ function Sync-Secrets {
     
     $newContent = $lines -join "`n"
     
-    # Sauvegarder temporairement en clair
-    $tempFile = "$SecretsFile.tmp"
-    $newContent | Out-File -FilePath $tempFile -Encoding UTF8 -NoNewline
-    
-    # Chiffrer avec SOPS
-    # Note: On passe --filename-override secrets.env pour que SOPS applique les règles de .sops.yaml
-    Write-Host "Chiffrement du fichier temporaire..." -ForegroundColor Cyan
-    try {
-        # PowerShell redirection handling for external commands can be tricky with binary data
-        # Best way is to let sops handle file output if possible, but sops outputs to stdout by default for encryption
-        
-        $sopsArgs = @("-e", "--filename-override", $SecretsFile, $tempFile)
-        
-        # Capture stdout (encrypted content) and stderr
-        $pinfo = New-Object System.Diagnostics.ProcessStartInfo
-        $pinfo.FileName = "sops"
-        $pinfo.Arguments = $sopsArgs -join " "
-        $pinfo.RedirectStandardOutput = $true
-        $pinfo.RedirectStandardError = $true
-        $pinfo.UseShellExecute = $false
-        $pinfo.StandardOutputEncoding = [System.Text.Encoding]::UTF8
-        
-        $p = New-Object System.Diagnostics.Process
-        $p.StartInfo = $pinfo
-        $p.Start() | Out-Null
-        
-        $stdout = $p.StandardOutput.ReadToEnd()
-        $stderr = $p.StandardError.ReadToEnd()
-        $p.WaitForExit()
-        
-        if ($p.ExitCode -eq 0) {
-            $stdout | Out-File -FilePath $SecretsFile -Encoding UTF8 -NoNewline
-            Remove-Item $tempFile -Force
-            Write-Host "`n  ✅ secrets.env mis à jour et rechiffré ($($newVars.Count) variable(s) ajoutée(s))" -ForegroundColor Green
-        }
-        else {
-            Write-Error "Erreur SOPS (Exit code $($p.ExitCode)): $stderr"
-            if (Test-Path $tempFile) { Remove-Item $tempFile -Force }
-        }
+    $encrypted = Protect-SecretsContent -Content $newContent -TargetFile $SecretsFile
+    if ($null -eq $encrypted) {
+        Write-Error "Erreur lors du chiffrement - $SecretsFile n'a pas été modifié"
+        return
     }
-    catch {
-        Write-Error "Erreur lors du chiffrement: $_"
-        if (Test-Path $tempFile) {
-            Remove-Item $tempFile -Force
-        }
-    }
+
+    $encrypted | Out-File -FilePath $SecretsFile -Encoding UTF8 -NoNewline
+    Write-Host "`n  ✅ secrets.env mis à jour et rechiffré ($($newVars.Count) variable(s) ajoutée(s))" -ForegroundColor Green
 }
 
 # Fonction pour initialiser secrets.env
