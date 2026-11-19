@@ -1,478 +1,256 @@
 # 📋 Dev.Local 2.0 - Aide-Mémoire Rapide
 
+> **Rôle de ce document :** retrouver une commande. Tableaux et commandes en une ligne, sans explications : le comportement de chaque commande est décrit dans [README.md](README.md), le premier démarrage dans [QUICKSTART.md](QUICKSTART.md).
+
 ## 🚀 Commandes Essentielles
 
-### Windows (PowerShell)
+### Services Docker
 
-```powershell
-# Menu interactif
-.\menu.ps1
+| Action | Just | PowerShell | Bash |
+|--------|------|------------|------|
+| Démarrer (services toujours actifs) | `just start` | `.\launch.ps1` | `./launch.sh start` |
+| Démarrer des profils | `just start-profile api,ui` | `.\launch.ps1 -p api,ui` | `./launch.sh --profile api,ui start` |
+| Arrêter | `just stop` | `.\launch.ps1 stop` | `./launch.sh stop` |
+| Redémarrer (recréer) | `just restart` | `.\launch.ps1 recreate` | `./launch.sh recreate` |
+| Statut | `just ps` | `.\launch.ps1 ps` | `./launch.sh ps` |
+| Logs tous | `just logs` | `.\launch.ps1 logs` | `./launch.sh logs` |
+| Logs service | `just logs api` | `.\launch.ps1 logs -service api` | `./launch.sh logs api` |
+| Commande ponctuelle | `just run gulp npx gulp build` | `.\launch.ps1 run gulp -- npx gulp build` | `./launch.sh run gulp npx gulp build` |
+| Nettoyer (containers et volumes) | `just clean` | `docker compose --profile "*" down -v --remove-orphans` | `docker compose --profile "*" down -v --remove-orphans` |
 
-# Gestion des profils
-.\manage-profiles.ps1 list                    # Lister
-.\manage-profiles.ps1 -Action add             # Ajouter
-.\manage-profiles.ps1 -Action generate        # Regénérer compose
+### Profils de services
 
-# Services
-.\launch.ps1                                  # Démarrer tout
-.\launch.ps1 -p andoc,recpro                  # Profils spécifiques
-.\launch.ps1 -c stop                          # Arrêter
-.\launch.ps1 -c recreate                      # Recréer
+| Action | Just | PowerShell | Bash |
+|--------|------|------------|------|
+| Lister | `just profiles` | `.\manage-profiles.ps1 -Action list` | `./manage-profiles.sh list` |
+| Ajouter | - | `.\manage-profiles.ps1 -Action add` | `./manage-profiles.sh add` |
+| Générer compose et Traefik | `just generate` | `.\manage-profiles.ps1 -Action generate` | `./manage-profiles.sh generate` |
+| Valider les profils | - | `.\validate-profiles.ps1` | `./validate-profiles.sh` |
+| Valider docker-compose.yml | `just validate` | `docker compose config --quiet` | `docker compose config --quiet` |
 
-# Secrets
-.\manage-profiles.ps1 -Action init-secrets    # Initialiser
-.\manage-profiles.ps1 -Action sync-secrets    # Synchroniser
-.\launch.ps1 -c edit-secrets                  # Éditer
-.\launch.ps1 -c view-secrets                  # Voir
+### Secrets (SOPS)
 
-# AWS
-.\launch.ps1 -c sso                           # Connexion SSO
-.\launch.ps1 -c id                            # Identité
-.\launch.ps1 -c ecr-login                     # Docker ECR
-```
+| Action | Just | PowerShell | Bash |
+|--------|------|------------|------|
+| Initialiser | - | `.\manage-profiles.ps1 -Action init-secrets` | `./manage-profiles.sh init-secrets` |
+| Éditer | `just secrets-edit` | `.\launch.ps1 -c edit-secrets` | `./launch.sh edit-secrets` |
+| Voir | `just secrets-view` | `.\launch.ps1 -c view-secrets` | `./launch.sh view-secrets` |
+| Synchroniser avec les profils | - | `.\manage-profiles.ps1 -Action sync-secrets` | `./manage-profiles.sh sync-secrets` |
+| Lister les secrets détectés | - | `.\manage-profiles.ps1 -Action list-secrets` | `./manage-profiles.sh list-secrets` |
 
-### Linux/macOS (Bash)
+### AWS et Docker Registry
 
-```bash
-# Menu interactif
-./menu.sh
+| Action | Just | PowerShell | Bash |
+|--------|------|------------|------|
+| AWS SSO Login | `just aws-sso` | `.\launch.ps1 -c sso` | `./launch.sh sso` |
+| AWS Identity | `just aws-id` | `.\launch.ps1 -c id` | `./launch.sh id` |
+| ECR Login | `just ecr-login` | `.\launch.ps1 -c ecr-login` | `./launch.sh ecr-login` |
+| JFrog Login | `just jfrog-login` | `.\launch.ps1 -c jfrog-login` | `./launch.sh jfrog-login` |
 
-# Gestion des profils
-./manage-profiles.sh list                     # Lister
-./manage-profiles.sh add                      # Ajouter
-./manage-profiles.sh generate                 # Regénérer compose
+### Utilitaires
 
-# Services
-./launch.sh                                   # Démarrer tout
-./launch.sh --profile andoc,recpro start      # Profils spécifiques
-./launch.sh stop                              # Arrêter
-./launch.sh recreate                          # Recréer
+| Action | Just | PowerShell | Bash |
+|--------|------|------------|------|
+| Menu interactif | `just menu` | `.\menu.ps1` | `./menu.sh` |
+| Config finale | `just config` | `docker compose config` | `docker compose config` |
+| Lister les recettes Just | `just --list` | - | - |
+| Vérifier perms .sh | - | `.\fix-sh-permissions.ps1` | `chmod +x *.sh` |
+| Tests des scripts Bash | `just test` | - | `tests/run-tests.sh` |
+| ShellCheck (via Docker) | `just lint` | - | - |
 
-# Secrets
-./manage-profiles.sh init-secrets             # Initialiser
-./manage-profiles.sh sync-secrets             # Synchroniser
-./launch.sh edit-secrets                      # Éditer
-./launch.sh view-secrets                      # Voir
+### Raccourcis Just (aliases)
 
-# AWS
-./launch.sh sso                               # Connexion SSO
-./launch.sh id                                # Identité
-./launch.sh ecr-login                         # Docker ECR
-```
+| Alias | Recette |
+|-------|---------|
+| `just s`, `just up` | `start` |
+| `just st`, `just down` | `stop` |
+| `just r` | `restart` |
+| `just p` | `ps` |
+| `just g` | `generate` |
+| `just v` | `validate` |
 
-## 📂 Structure des Fichiers
+## 📋 Options du Menu
 
-```
-Dev.Local.2.0/
-├── menu.ps1 / menu.sh                 # Menu principal
-├── manage-profiles.ps1 / .sh          # Gestion profils
-├── launch.ps1 / .sh                   # Orchestration
-├── docker-compose.yml                 # Généré automatiquement
-├── config.yml                         # Config globale + vars partagées
-├── secrets.env                        # Chiffré SOPS
-├── .sops.yaml                         # Config SOPS
-├── profiles/                          # Profils de services
-│   ├── andoc.yml
-│   ├── recpro.yml
-│   └── example.yml
-├── traefik/
-│   ├── traefik.yml                    # Config Traefik
-│   └── dynamic.yml                    # Routes (généré)
-└── docs/
-    ├── README.md
-    ├── BASH_README.md
-    ├── shared-env-guide.md            # Guide vars partagées
-    └── ...
-```
+| # | Action | Équivalent CLI |
+|---|--------|---------------|
+| **1** | Démarrer tous les services (tous les profils activés) | `./launch.sh --profile X,Y up` |
+| **m** | Démarrer services minimums (sans profils) | `./launch.sh up` |
+| **2** | Profils spécifiques | `./launch.sh --profile X,Y up` |
+| **3** | Recréer | `./launch.sh recreate` |
+| **4** | Arrêter | `./launch.sh down` |
+| **5** | Lister containers | `docker compose ps` |
+| **6** | Ajouter profil | `./manage-profiles.sh add` |
+| **7** | Lister profils | `./manage-profiles.sh list` |
+| **8** | Regénérer compose | `./manage-profiles.sh generate` |
+| **9** | Valider les profils | `./validate-profiles.sh` |
+| **10** | Éditer secrets | `./launch.sh edit-secrets` |
+| **11** | Voir secrets | `./launch.sh view-secrets` |
+| **12** | Initialiser secrets | `./manage-profiles.sh init-secrets` |
+| **13** | Synchroniser secrets | `./manage-profiles.sh sync-secrets` |
+| **14** | AWS SSO | `./launch.sh sso` |
+| **15** | AWS Identity | `./launch.sh id` |
+| **16** | ECR Login | `./launch.sh ecr-login` |
+| **17** | Ouvrir README.md | - |
+| **0/q** | Quitter | - |
 
-## 🔄 Variables d'Environnement Partagées
+## 🌐 URLs locales
 
-### Configuration (config.yml)
-
-```yaml
-shared_env:
-  global:
-    - LOG_LEVEL=info
-    - API_URL=https://api.example.com
-  
-shared_env_config:
-  enabled: true
-  auto_inject:
-    - global
-```
-
-### Utilisation
-
-```powershell
-# Éditer les variables partagées
-notepad config.yml
-
-# Regénérer avec les nouvelles variables
-.\manage-profiles.ps1 -Action generate
-
-# Vérifier l'injection
-Get-Content docker-compose.yml | Select-String "Variables partagées"
-```
-
-**💡 Astuce :** Les variables partagées sont injectées automatiquement dans tous les services. Parfait pour les URLs de services externes !
-
-📚 **Guide complet :** [docs/shared-env-guide.md](docs/shared-env-guide.md)
+| Service | URL |
+|---------|-----|
+| Vos services (via Traefik) | `http://localhost:8080/<prefix>` |
+| Traefik Dashboard | `http://localhost:8081/` |
+| Dozzle (logs) | `http://localhost:9999/` ou `http://localhost:8080/logs` |
 
 ## 🎯 Workflows Courants
 
 ### 1️⃣ Premier Démarrage
 
-```bash
-# 1. Initialiser secrets
-./manage-profiles.sh init-secrets
-sops secrets.env
-
-# 2. Créer un profil
-./manage-profiles.sh add
-
-# 3. Démarrer
-./launch.sh
-```
+Voir [QUICKSTART.md](QUICKSTART.md).
 
 ### 2️⃣ Ajouter un Service
 
 ```bash
-# 1. Créer le profil
-./manage-profiles.sh add
-# Répondre aux questions interactives
+./manage-profiles.sh add                    # 1. Créer le profil (questions interactives)
+./manage-profiles.sh sync-secrets           # 2. Synchroniser secrets
+./launch.sh edit-secrets                    # 3. Renseigner les valeurs
+./manage-profiles.sh generate               # 4. Regénérer
+./launch.sh --profile nom-service start     # 5. Démarrer le nouveau service
+```
 
-# 2. Synchroniser secrets
-./manage-profiles.sh sync-secrets
-
-# 3. Démarrer le nouveau service
-./launch.sh --profile nom-service start
+```powershell
+.\manage-profiles.ps1 -Action add
+.\manage-profiles.ps1 -Action sync-secrets
+.\launch.ps1 -c edit-secrets
+.\manage-profiles.ps1 -Action generate
+.\launch.ps1 -p nouveau-service
 ```
 
 ### 3️⃣ Modifier un Profil
 
 ```bash
-# 1. Éditer manuellement
-vi profiles/mon-service.yml
-
-# 2. Regénérer compose
-./manage-profiles.sh generate
-
-# 3. Valider
-docker compose config --quiet
-
-# 4. Redémarrer
-./launch.sh recreate
+vi profiles/mon-service.yml         # 1. Éditer manuellement
+./manage-profiles.sh generate       # 2. Regénérer compose
+docker compose config --quiet       # 3. Valider
+./launch.sh recreate                # 4. Redémarrer
 ```
 
 ### 4️⃣ Gérer les Secrets
 
 ```bash
-# Voir les secrets manquants
-./manage-profiles.sh sync-secrets
-
-# Éditer
-./launch.sh edit-secrets
-# ou directement
-sops secrets.env
-
-# Vérifier
-./launch.sh view-secrets
-
-# Appliquer
-./launch.sh recreate
+./manage-profiles.sh sync-secrets   # Voir (et ajouter) les secrets manquants
+./launch.sh edit-secrets            # Éditer (ou directement : sops secrets.env)
+./launch.sh view-secrets            # Vérifier
+./launch.sh recreate                # Appliquer
 ```
 
 ### 5️⃣ Déploiement AWS
 
 ```bash
-# 1. SSO
-./launch.sh sso
-
-# 2. Vérifier
-./launch.sh id
-
-# 3. ECR
-./launch.sh ecr-login
-
-# 4. Démarrer
-./launch.sh
+./launch.sh sso          # 1. SSO
+./launch.sh id           # 2. Vérifier
+./launch.sh ecr-login    # 3. ECR
+./launch.sh              # 4. Démarrer
 ```
 
-## 📋 Options du Menu (1-16)
+### 6️⃣ Développement quotidien
 
-| # | Action | Équivalent CLI |
-|---|--------|---------------|
-| **1** | Démarrer tous | `./launch.sh` |
-| **2** | Profils spécifiques | `./launch.sh --profile X,Y start` |
-| **3** | Recréer | `./launch.sh recreate` |
-| **4** | Arrêter | `./launch.sh stop` |
-| **5** | Lister containers | `./launch.sh ps` |
-| **6** | Ajouter profil | `./manage-profiles.sh add` |
-| **7** | Lister profils | `./manage-profiles.sh list` |
-| **8** | Regénérer compose | `./manage-profiles.sh generate` |
-| **9** | Éditer secrets | `./launch.sh edit-secrets` |
-| **10** | Voir secrets | `./launch.sh view-secrets` |
-| **11** | Initialiser secrets | `./manage-profiles.sh init-secrets` |
-| **12** | Synchroniser secrets | `./manage-profiles.sh sync-secrets` |
-| **13** | AWS SSO | `./launch.sh sso` |
-| **14** | AWS Identity | `./launch.sh id` |
-| **15** | ECR Login | `./launch.sh ecr-login` |
-| **16** | README | `cat README.md` |
-| **0/q** | Quitter | - |
-
-## 🔧 Dépannage Express
-
-### Erreur : "command not found" ou "Permission denied"
-```bash
-# Linux/macOS : Ajouter permissions exécutables
-chmod +x *.sh
-
-# Windows : Vérifier et corriger automatiquement
-.\fix-sh-permissions.ps1
+```powershell
+just start                     # Matin - Démarrer
+$env:API_TAG="feature-xyz"     # Changer de branche/version (export API_TAG=feature-xyz sous Bash)
+just restart
+just logs api                  # Voir les logs
+just stop                      # Soir - Arrêter
 ```
 
-### Vérifier les permissions des fichiers .sh
-```bash
-# Voir les permissions Git
-git ls-files -s *.sh
-# 100755 = exécutable ✅
-# 100644 = non exécutable ❌
+### 7️⃣ Modifier les variables partagées
 
-# Corriger manuellement
-git update-index --chmod=+x fichier.sh
+```powershell
+notepad config.yml                                                  # 1. Éditer (nano config.yml sous Bash)
+.\manage-profiles.ps1 -Action generate                              # 2. Regénérer
+Get-Content docker-compose.yml | Select-String "Variables partagées"  # 3. Vérifier l'injection
+.\launch.ps1 -c recreate                                            # 4. Relancer
 ```
 
-### Erreur : "bad interpreter: /bin/bash^M"
-```bash
-# Problème : Fichier utilise CRLF au lieu de LF
-# Solution 1 : Utiliser dos2unix
-dos2unix launch.sh
+### 8️⃣ Partager avec l'équipe
 
-# Solution 2 : Avec sed
-sed -i 's/\r$//' launch.sh
+```powershell
+# 1. Commiter les profils (sans secrets!)
+git add profiles/nouveau-service.yml
+git commit -m "feat(profiles): add nouveau-service profile"
 
-# Prévention : .gitattributes est configuré pour forcer LF
-git check-attr -a launch.sh
-```
+# 2. Les secrets requis sont documentés dans le profil (section secrets:)
 
-### Erreur : "SOPS n'est pas installé"
-```bash
-# macOS
-brew install sops
-
-# Linux
-wget https://github.com/mozilla/sops/releases/download/v3.8.1/sops-v3.8.1.linux.amd64
-sudo mv sops-v3.8.1.linux.amd64 /usr/local/bin/sops
-chmod +x /usr/local/bin/sops
-```
-
-### Erreur : "Docker Compose v2+ requis"
-```bash
-# Vérifier
-docker compose version
-
-# Installer v2
-https://docs.docker.com/compose/install/
-```
-
-### Erreur SOPS : "no key found"
-```bash
-# Configurer .sops.yaml
-vi .sops.yaml
-
-# Pour Age
-creation_rules:
-  - age: 'age1...'
-
-# Pour AWS KMS
-creation_rules:
-  - kms: 'arn:aws:kms:ca-central-1:123456789012:key/...'
-```
-
-### Validation docker-compose.yml
-```bash
-docker compose config --quiet
-# Aucune sortie = OK
-```
-
-### Logs Docker
-```bash
-docker compose logs -f
-docker compose logs -f service-name
-```
-
-### Encodage UTF-8 (Linux)
-```bash
-export LANG=en_US.UTF-8
-export LC_ALL=en_US.UTF-8
-```
-
-## 🔐 Configuration SOPS
-
-### Option 1 : Age (Recommandé pour développement)
-
-```bash
-# 1. Générer une clé
-age-keygen -o ~/.config/sops/age/keys.txt
-
-# 2. Copier la clé publique
-cat ~/.config/sops/age/keys.txt | grep "public key"
-
-# 3. Configurer .sops.yaml
-cat > .sops.yaml << EOF
-creation_rules:
-  - age: 'age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p'
-EOF
-```
-
-### Option 2 : AWS KMS (Production)
-
-```bash
-# 1. Créer une clé KMS dans AWS Console
-# Region: ca-central-1
-# Alias: dev-local-sops
-
-# 2. Configurer .sops.yaml
-cat > .sops.yaml << EOF
-creation_rules:
-  - kms: 'arn:aws:kms:ca-central-1:237029655182:key/your-key-id'
-    aws_profile: ESG-DV-PowerUser-SSO
-EOF
-
-# 3. Tester
-sops -e secrets.env.example > secrets.env
-sops -d secrets.env
+# 3. L'équipe renseigne ses valeurs avec :
+.\manage-profiles.ps1 -Action sync-secrets
+.\launch.ps1 -c edit-secrets
 ```
 
 ## 🐳 Docker Compose Avancé
 
-### Voir la configuration finale
-```bash
-docker compose config
-```
+| Action | Commande |
+|--------|----------|
+| Voir la configuration finale | `docker compose config` |
+| Démarrer un seul service | `docker compose up -d service-name` |
+| Logs en temps réel | `docker compose logs -f` |
+| Logs d'un service | `docker compose logs -f service-name` |
+| Rebuild un service | `docker compose up -d --build service-name` |
+| Forcer recréation | `docker compose up -d --force-recreate` |
+| Variables d'un conteneur | `docker compose exec service-name env` |
+| Nettoyer tout (containers et volumes) | `docker compose --profile "*" down -v --remove-orphans` |
+| Supprimer toutes les images Docker inutilisées du poste | `docker system prune -a` |
 
-### Démarrer un seul service
-```bash
-docker compose up -d service-name
-```
-
-### Logs en temps réel
-```bash
-docker compose logs -f
-```
-
-### Rebuild un service
-```bash
-docker compose up -d --build service-name
-```
-
-### Forcer recréation
-```bash
-docker compose up -d --force-recreate
-```
-
-### Nettoyer tout
-```bash
-docker compose --profile "*" down -v --remove-orphans
-docker system prune -a
-```
+Ces commandes n'ont pas accès aux secrets SOPS : seuls les scripts `launch.*` les chargent.
 
 ## 📊 Variables d'Environnement
 
-### Docker Compose
+| Variable | Effet |
+|----------|-------|
+| `COMPOSE_PROFILES=api,ui` | Profils actifs pour les commandes `docker compose` directes |
+| `COMPOSE_FILE=docker-compose.custom.yml` | Fichier de projet custom |
+| `COMPOSE_PROJECT_NAME=devlocal` | Nom du projet |
+| `SOPS_AGE_KEY_FILE=/path/to/keys.txt` | Clé Age custom |
+| `AWS_PROFILE=<profil>` | Profil AWS, prioritaire sur `aws.profile` de `config.yml` |
+| `YQ_IMAGE=mikefarah/yq:<version>` | Image Docker de `yq` utilisée par les scripts Bash |
+| `HOST_UID`, `HOST_GID` | Utilisateur des conteneurs « outils », exportés par `launch.sh` |
+| `<SERVICE>_IMAGE`, `<SERVICE>_TAG` | Image et tag d'un service, selon le profil |
 
-```bash
-# Profils actifs (sans lancer de services)
-export COMPOSE_PROFILES=andoc,recpro
+## 💡 Astuces
 
-# Fichier de projet custom
-export COMPOSE_FILE=docker-compose.custom.yml
+### Alias PowerShell
 
-# Nom du projet
-export COMPOSE_PROJECT_NAME=devlocal
+Ajoutez à votre profil PowerShell (`$PROFILE`) :
+
+```powershell
+# Raccourcis Dev.Local 2.0
+Set-Location "C:\Src\Dev.Local.2.0"
+function menu { .\menu.ps1 }
+function start { .\launch.ps1 }
+function stop { .\launch.ps1 -c stop }
+function secrets { .\launch.ps1 -c edit-secrets }
 ```
 
-### SOPS
-
-```bash
-# Clé Age custom
-export SOPS_AGE_KEY_FILE=/path/to/keys.txt
-
-# AWS Profile
-export AWS_PROFILE=ESG-DV-PowerUser-SSO
+Ensuite, utilisez simplement :
+```powershell
+menu      # Ouvre le menu
+start     # Démarre tout
+stop      # Arrête tout
+secrets   # Édite les secrets
 ```
 
-## 🎨 Personnalisation
+## 📖 Où trouver le reste
 
-### Changer le port Dozzle
-
-```yaml
-# config.yml
-dozzle_enabled: true
-dozzle_port: 9999  # Modifier ici
-```
-
-### Désactiver Dozzle
-
-```yaml
-# config.yml
-dozzle_enabled: false
-```
-
-### Changer les ports Traefik
-
-```yaml
-# docker-compose.yml (après génération, éditer manuellement)
-traefik:
-  ports:
-    - "127.0.0.1:8080:80"    # HTTP
-    - "127.0.0.1:8081:8080"  # Dashboard
-```
-
-## 📖 Documentation Complète
-
-| Fichier | Description |
-|---------|-------------|
-| `README.md` | Documentation principale |
-| `BASH_README.md` | Guide Linux/macOS |
-| `MIGRATION_GUIDE.md` | Migration Windows ↔ Linux |
-| `BASH_CONVERSION_REPORT.md` | Détails techniques |
-| `BASH_COMPLETION.md` | Résumé de la conversion |
-| `QUICKSTART.md` | Démarrage rapide |
-
-## 🆘 Aide Rapide
-
-```bash
-# Bash
-./menu.sh                    # Menu interactif
-./manage-profiles.sh --help  # Aide (si implémenté)
-./launch.sh --help           # Aide (si implémenté)
-./test-bash-scripts.sh       # Tester l'installation
-
-# Docker
-docker compose --help
-docker compose ps
-docker compose logs -f
-
-# SOPS
-sops --help
-sops -d secrets.env
-sops secrets.env
-```
-
-## ✅ Checklist Déploiement
-
-- [ ] Docker & Docker Compose v2+ installés
-- [ ] SOPS installé et configuré
-- [ ] `.sops.yaml` créé avec clé Age ou KMS
-- [ ] Scripts bash exécutables (`chmod +x *.sh`)
-- [ ] `secrets.env` initialisé et édité
-- [ ] Au moins un profil créé dans `profiles/`
-- [ ] `docker-compose.yml` généré
-- [ ] Validation réussie : `docker compose config --quiet`
-- [ ] Services démarrés : `./launch.sh`
-- [ ] Traefik accessible : `http://localhost:8081/dashboard/`
-- [ ] Dozzle accessible : `http://localhost:9999/` (si activé)
+| Sujet | Document |
+|-------|----------|
+| Structure des fichiers | [README.md](README.md#-structure-du-projet) |
+| Format d'un profil, ports, Traefik | [README.md](README.md#-format-dun-profil) |
+| Configuration de SOPS et des secrets | [README.md](README.md#-gestion-des-secrets-avec-sops), [docs/sops_age_guide.md](docs/sops_age_guide.md) |
+| Variables d'environnement partagées | [docs/shared-env-guide.md](docs/shared-env-guide.md), [docs/shared-env-examples.md](docs/shared-env-examples.md) |
+| Dozzle, registres, AWS (`config.yml`) | [README.md](README.md#configuration-globale-configyml) |
+| Ports et configuration de Traefik | [README.md](README.md#personnalisation-traefik) |
+| Dépannage | [README.md](README.md#-dépannage) |
+| Checklist de démarrage | [QUICKSTART.md](QUICKSTART.md#-checklist-de-démarrage) |
+| Linux/macOS | [BASH_README.md](BASH_README.md) |
+| Tous les documents | [README.md](README.md#-documentation-complète) |
 
 ---
 
