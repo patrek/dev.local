@@ -1,16 +1,22 @@
 # Scripts Bash pour Dev.Local 2.0
 
+> **Rôle de ce document :** ce qui est propre à Linux/macOS (différences avec PowerShell, compatibilité, terminal, migration depuis Windows). Tout le reste est commun aux deux plateformes : référence dans [README.md](README.md), commandes dans [CHEATSHEET.md](CHEATSHEET.md), premier démarrage dans [QUICKSTART.md](QUICKSTART.md).
+
 ## ✅ Scripts Créés
 
-Versions bash complètes des 3 scripts PowerShell :
+Versions bash complètes des scripts PowerShell :
 
-1. **menu.sh** - Menu interactif TUI (256 lignes équivalent)
-2. **manage-profiles.sh** - Gestion des profils et génération (770 lignes équivalent)  
+1. **menu.sh** - Menu interactif TUI
+2. **manage-profiles.sh** - Gestion des profils et génération
 3. **launch.sh** - Orchestration des services Docker
+4. **validate-profiles.sh** - Validation des profils
+5. **lib/yq.sh** - Fournit `yq` aux scripts ci-dessus (installation locale ou image Docker)
 
 ## 🚀 Utilisation sous Linux/macOS
 
 ### Prérequis
+
+Les prérequis sont ceux du [README](README.md#prérequis). Pour les vérifier ou les installer :
 
 ```bash
 # Docker & Docker Compose v2+
@@ -25,128 +31,55 @@ brew install sops  # macOS
 brew install awscli
 ```
 
+`yq` est optionnel : voir [(Optionnel) Installation de yq](README.md#optionnel-installation-de-yq-recommandé).
+
 ### Rendre les scripts exécutables
 
 ```bash
-chmod +x menu.sh manage-profiles.sh launch.sh
+chmod +x *.sh
 ```
 
-### Menu principal
+### Commandes
 
-```bash
-./menu.sh
-```
-
-### Gestion des profils
-
-```bash
-# Lister les profils
-./manage-profiles.sh list
-
-# Ajouter un nouveau profil
-./manage-profiles.sh add
-
-# Regénérer docker-compose.yml
-./manage-profiles.sh generate
-
-# Regénérer docker-compose.yml
-./manage-profiles.sh generate
-
-# Synchroniser les secrets
-./manage-profiles.sh sync-secrets
-```
-
-### Variables d'environnement partagées
-
-Les scripts bash supportent également les variables d'environnement partagées via `config.yml` :
-
-```bash
-# Éditer la configuration
-nano config.yml
-
-# Ajouter vos variables partagées
-# shared_env:
-#   global:
-#     - API_URL=https://api.example.com
-#     - LOG_LEVEL=info
-
-# Regénérer avec les variables partagées
-./manage-profiles.sh generate
-```
-
-Le script affichera automatiquement le nombre de variables partagées injectées dans chaque service :
-
-```
-✅ Ajout : mon-service
-   📌 6 variable(s) partagée(s)
-```
-
-📚 **Documentation complète :** [docs/shared-env-guide.md](docs/shared-env-guide.md)
-
-### Orchestration des services
-
-```bash
-# Démarrer tous les services
-./launch.sh start
-# ou simplement
-./launch.sh
-
-# Démarrer avec des profils spécifiques
-./launch.sh --profile andoc,recpro start
-
-# Arrêter tous les services
-./launch.sh stop
-
-# Recréer les services
-./launch.sh recreate
-
-# Lister les containers
-./launch.sh ps
-
-# Éditer les secrets
-./launch.sh edit-secrets
-
-# Voir les secrets déchiffrés
-./launch.sh view-secrets
-
-# AWS SSO
-./launch.sh sso
-
-# Identité AWS
-./launch.sh id
-
-# Connexion Docker ECR
-./launch.sh ecr-login
-```
+Toutes les commandes Bash, avec leurs équivalents Just et PowerShell, sont dans [CHEATSHEET.md](CHEATSHEET.md). Le menu se lance avec `./menu.sh`.
 
 ## 🔄 Équivalences PowerShell ↔ Bash
 
-| PowerShell | Bash |
-|------------|------|
-| `.\menu.ps1` | `./menu.sh` |
-| `.\manage-profiles.ps1 -Action add` | `./manage-profiles.sh add` |
-| `.\launch.ps1 -p andoc,recpro` | `./launch.sh --profile andoc,recpro start` |
-| `.\launch.ps1 -c edit-secrets` | `./launch.sh edit-secrets` |
+Les deux familles de scripts acceptent les mêmes actions ; seule la syntaxe des arguments change :
+
+| | PowerShell | Bash |
+|---|------------|------|
+| Action de `manage-profiles` | `.\manage-profiles.ps1 -Action add` | `./manage-profiles.sh add` |
+| Commande de `launch` | `.\launch.ps1 -c edit-secrets` | `./launch.sh edit-secrets` |
+| Profils à démarrer | `.\launch.ps1 -p api,ui` | `./launch.sh --profile api,ui start` |
+| Commande ponctuelle | `.\launch.ps1 run gulp -- npx gulp build` | `./launch.sh run gulp npx gulp build` |
+| Menu | `.\menu.ps1` | `./menu.sh` |
 
 ## 📝 Différences avec PowerShell
 
 ### Fonctionnalités identiques
-- ✅ Menu interactif complet (16 options)
+- ✅ Menu interactif complet (17 options)
 - ✅ Création de profils avec prompts
-- ✅ Génération docker-compose.yml et traefik/dynamic.yml
-- ✅ Filtrage des ports
+- ✅ Génération docker-compose.yml et traefik/dynamic.yml (résultat identique, vérifié par `tests/compare-shells.sh`)
+- ✅ Filtrage des ports (`expose_ports`)
 - ✅ Support docker profiles (always_active/docker_profile)
 - ✅ Synchronisation des secrets avec section `secrets:`
 - ✅ Intégration SOPS complète
 - ✅ Support Traefik failover
 - ✅ Configuration Dozzle
+- ✅ Variables d'environnement partagées (`config.yml`)
+
+### Différences de comportement
+- **Validation avant génération** : `manage-profiles.sh generate` exécute d'abord `validate-profiles.sh` et s'arrête en cas d'erreur.
+- **`HOST_UID` / `HOST_GID`** : exportés par `launch.sh` pour les profils « outils » (voir [Exemple 4 bis](README.md#exemple-4-bis--outils-de-build-dans-docker-gulp-npm-)).
+- **Secrets** : `launch.sh` n'exporte les secrets que pour sa propre exécution ; ils n'apparaissent pas dans votre shell.
 
 ### Adaptations techniques
 - **Couleurs** : ANSI escape codes au lieu de `Write-Host -ForegroundColor`
 - **Pause** : `read -n 1 -s` au lieu de `$Host.UI.RawUI.ReadKey()`
 - **Arrays associatifs** : `declare -A` au lieu de `@{}`
 - **Regex** : `sed`/`grep` au lieu de `-match`
-- **YAML parsing** : Combinaison `grep`/`sed` au lieu de regex PowerShell
+- **YAML parsing** : `yq` (mikefarah v4+, local ou via Docker, voir `lib/yq.sh`) au lieu du module `powershell-yaml`
 
 ## 🐧 Compatibilité
 
@@ -154,17 +87,6 @@ Le script affichera automatiquement le nombre de variables partagées injectées
 - ✅ macOS (Intel & Apple Silicon)
 - ✅ WSL2 (Windows Subsystem for Linux)
 - ✅ Git Bash (Windows, avec limitations)
-
-## 🔐 Configuration SOPS
-
-Identique pour PowerShell et Bash - éditez `.sops.yaml` :
-
-```yaml
-creation_rules:
-  - kms: 'arn:aws:kms:ca-central-1:123456789012:key/your-key-id'
-    # ou
-  - age: 'age1xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
-```
 
 ## 🎨 Caractères spéciaux
 
@@ -186,44 +108,18 @@ Les scripts bash créent exactement les mêmes fichiers que PowerShell :
 - `traefik/dynamic.yml`
 - `profiles/*.yml`
 - `secrets.env` (chiffré avec SOPS)
-- `config.yml`
+
+Ils lisent le même `config.yml`.
 
 ## 🐛 Dépannage
 
-### "command not found: ./menu.sh"
+Voir [Dépannage](README.md#-dépannage) dans le README, notamment :
 
-```bash
-chmod +x *.sh
-```
-
-### "SOPS n'est pas installé"
-
-```bash
-# macOS
-brew install sops
-
-# Linux
-wget https://github.com/mozilla/sops/releases/download/v3.8.1/sops-v3.8.1.linux.amd64
-sudo mv sops-v3.8.1.linux.amd64 /usr/local/bin/sops
-chmod +x /usr/local/bin/sops
-```
-
-### Erreurs d'encodage UTF-8
-
-```bash
-export LANG=en_US.UTF-8
-./menu.sh
-```
-
-### "Docker Compose v2+ requis"
-
-```bash
-# Vérifier la version
-docker compose version
-
-# Si vous avez docker-compose v1, installez v2
-# https://docs.docker.com/compose/install/
-```
+- ["command not found" ou "Permission denied"](README.md#erreur--command-not-found-ou-permission-denied)
+- ["bad interpreter: /bin/bash^M"](README.md#erreur--bad-interpreter-binbashm)
+- ["SOPS n'est pas installé"](README.md#erreur--sops-nest-pas-installé)
+- ["Docker Compose v2+ requis"](README.md#erreur--docker-compose-v2-requis)
+- [Erreurs d'encodage UTF-8](README.md#erreurs-dencodage-utf-8-linuxmacos)
 
 ## 🔄 Migration Windows → Linux
 
