@@ -1,0 +1,144 @@
+# Généré automatiquement par manage-profiles.sh
+# NE PAS ÉDITER MANUELLEMENT - Vos modifications seront écrasées
+name: testns
+
+services:
+  # Proxy du socket Docker : seul conteneur qui monte le socket.
+  # Traefik et Dozzle passent par lui et n'ont accès qu'à des requêtes de lecture
+  # (conteneurs, événements, infos) ; aucune requête d'écriture n'est acceptée.
+  socket-proxy:
+    image: tecnativa/docker-socket-proxy:v0.5.0
+    container_name: devlocal_socket_proxy
+    environment:
+      - CONTAINERS=1  # liste, logs et stats des conteneurs (Traefik, Dozzle)
+      - INFO=1        # requis par Dozzle pour se connecter
+      - POST=0        # refuse toute requête d'écriture
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - socket-proxy
+
+  # Reverse Proxy Traefik
+  traefik:
+    image: traefik:v3.6.4
+    container_name: devlocal_traefik
+    ports:
+      - "127.0.0.1:8080:80"
+      - "127.0.0.1:8081:8080"
+    extra_hosts:
+      - "external-ip:host-gateway"
+    volumes:
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro
+    networks:
+      - traefik-network
+      - socket-proxy
+    depends_on:
+      - socket-proxy
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Monitoring des logs
+  dozzle:
+    image: amir20/dozzle:latest
+    container_name: devlocal_dozzle
+    ports:
+      - "127.0.0.1:9999:8080"
+    environment:
+      - DOZZLE_TIMEOUT=15s
+      - DOZZLE_BASE=/logs
+      - DOCKER_HOST=tcp://socket-proxy:2375
+    extra_hosts:
+      - "external-ip:host-gateway"
+    networks:
+      - traefik-network
+      - socket-proxy
+    depends_on:
+      - socket-proxy
+    healthcheck:
+      test: ["CMD", "/dozzle", "healthcheck"]
+      interval: 3s
+      timeout: 30s
+
+  # Service: api
+  api:
+    image: ${API_IMAGE:-nginx}:${API_TAG:-alpine}
+    environment:
+      # Variables partagées (depuis config.yml)
+      - LOG_LEVEL=info
+      - TZ=America/Toronto
+      - API_GATEWAY_URL=https://api.example.com
+      - API_ONLY_VAR=api-only-value
+      # Variables exclusives du service
+      - SERVICE_NAME=api
+      - API_KEY=${API_KEY:-changeme}
+
+    container_name: api
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/"]
+      interval: 30s
+    extra_hosts:
+      - "external-ip:host-gateway"
+    networks:
+      - traefik-network
+
+  # Service: excluded
+  excluded:
+    image: nginx:alpine
+    container_name: excluded
+    extra_hosts:
+      - "external-ip:host-gateway"
+    networks:
+      - traefik-network
+
+  # Service: plain
+  plain:
+    image: nginx:alpine
+    environment:
+      # Variables partagées (depuis config.yml)
+      - LOG_LEVEL=info
+      - TZ=America/Toronto
+      - API_GATEWAY_URL=https://api.example.com
+
+    container_name: plain
+    extra_hosts:
+      - "external-ip:host-gateway"
+    networks:
+      - traefik-network
+
+  # Service: web
+  web:
+    image: nginx:alpine
+    environment:
+      # Variables partagées (depuis config.yml)
+      - LOG_LEVEL=info
+      - TZ=America/Toronto
+      - API_GATEWAY_URL=https://api.example.com
+      # Variables exclusives du service
+      - API_BASE_URL=http://localhost:8080/api
+      - WEB_MODE=test
+
+    container_name: web
+    ports:
+      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:${WEB_ALT_PORT:-3001}:3001"
+      - "0.0.0.0:3002:3002"
+    extra_hosts:
+      - "external-ip:host-gateway"
+    networks:
+      - traefik-network
+    profiles:
+      - front
+
+
+networks:
+  traefik-network:
+    driver: bridge
+  # Réseau interne réservé à socket-proxy, Traefik et Dozzle :
+  # les services des profils ne peuvent pas joindre l'API Docker
+  socket-proxy:
+    driver: bridge
+    internal: true

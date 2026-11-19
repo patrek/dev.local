@@ -1,0 +1,13 @@
+# Aucune section environment : les variables partagées doivent quand même être injectées
+name: plain
+description: "Service sans variables propres"
+enabled: true
+always_active: true
+docker_profile: null
+
+docker-compose:
+  image: nginx:alpine
+  container_name: plain
+
+traefik:
+  enabled: false

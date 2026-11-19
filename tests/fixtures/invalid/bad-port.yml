@@ -1,0 +1,15 @@
+# expect: traefik.docker_port doit être entre 1 et 65535
+name: bad-port
+enabled: true
+always_active: true
+docker_profile: null
+
+docker-compose:
+  image: nginx:alpine
+  container_name: bad-port
+
+traefik:
+  enabled: true
+  prefix: /bad-port
+  docker_port: 99999
+  local_port: 8010

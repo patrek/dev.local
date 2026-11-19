@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Analyser les scripts Bash
+        # Version figée par l'image : même résultat qu'avec "just lint" en local
+        run: >
+          docker run --rm -v "$PWD":/mnt:ro -w /mnt koalaman/shellcheck:v0.11.0
+          -x -S warning
+          launch.sh manage-profiles.sh validate-profiles.sh menu.sh lib/yq.sh
+          tests/run-tests.sh tests/compare-shells.sh
+
+  psscriptanalyzer:
+    name: PSScriptAnalyzer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Analyser les scripts PowerShell
+        shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
+          $results = Invoke-ScriptAnalyzer -Path . -Recurse -Severity Error
+          $results | Format-Table -AutoSize -Property ScriptName, Line, RuleName, Message
+          if ($results) { exit 1 }
+
+  test-bash:
+    name: Tests Bash (yq ${{ matrix.yq }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        yq: [local, docker]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Retirer yq pour forcer l'image Docker
+        if: matrix.yq == 'docker'
+        run: |
+          while command -v yq >/dev/null 2>&1; do sudo rm -f "$(command -v yq)"; done
+      - name: Vérifier yq local
+        if: matrix.yq == 'local'
+        run: yq --version
+      - name: Exécuter les tests
+        run: tests/run-tests.sh
+
+  test-powershell:
+    name: Génération PowerShell
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Installer powershell-yaml
+        shell: pwsh
+        run: Install-Module powershell-yaml -Force -Scope CurrentUser
+      - name: Générer avec manage-profiles.ps1
+        run: tests/compare-shells.sh --powershell-only
+
+  shell-parity:
+    name: Parité Bash / PowerShell (informatif)
+    runs-on: ubuntu-latest
+    # Les deux implémentations ne produisent pas encore la même configuration :
+    # ce job montre les écarts sans bloquer la fusion.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Installer powershell-yaml
+        shell: pwsh
+        run: Install-Module powershell-yaml -Force -Scope CurrentUser
+      - name: Comparer les fichiers générés
+        run: tests/compare-shells.sh

@@ -1,0 +1,16 @@
+# Désactivé : absent de docker-compose.yml et sans route Traefik
+name: disabled
+description: "Service désactivé"
+enabled: false
+always_active: true
+docker_profile: null
+
+docker-compose:
+  image: nginx:alpine
+  container_name: disabled
+
+traefik:
+  enabled: true
+  prefix: /disabled
+  docker_port: 80
+  local_port: 8009

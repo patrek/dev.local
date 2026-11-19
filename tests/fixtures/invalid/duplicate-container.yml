@@ -1,0 +1,9 @@
+# expect: Nom de container 'api' déjà utilisé
+name: duplicate-container
+enabled: true
+always_active: true
+docker_profile: null
+
+docker-compose:
+  image: nginx:alpine
+  container_name: api

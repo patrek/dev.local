@@ -1,0 +1,25 @@
+# Configuration utilisée par tests/run-tests.sh
+namespace: testns
+
+dozzle_enabled: true
+dozzle_port: 9999
+
+shared_env:
+  global:
+    - LOG_LEVEL=info
+    - TZ=America/Toronto
+  external:
+    - API_GATEWAY_URL=https://api.example.com
+  api_only:
+    - API_ONLY_VAR=api-only-value
+
+shared_env_config:
+  enabled: true
+  auto_inject:
+    - global
+    - external
+  exclude_services:
+    - excluded
+  service_specific:
+    api:
+      - api_only

@@ -1,0 +1,8 @@
+# expect: Champ 'docker-compose.image' manquant ou vide
+name: missing-image
+enabled: true
+always_active: true
+docker_profile: null
+
+docker-compose:
+  container_name: missing-image

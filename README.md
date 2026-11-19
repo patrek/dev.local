@@ -1137,6 +1137,19 @@ chmod +x *.sh
 
 ## 🔧 Développement
 
+### Tests et analyse statique
+
+```bash
+just test   # tests des scripts Bash (génération, validation)
+just lint   # ShellCheck via Docker
+```
+
+- `tests/run-tests.sh` copie les scripts et les fixtures de `tests/fixtures/` dans un répertoire temporaire, génère `docker-compose.yml` et `traefik/dynamic.yml`, puis les compare aux fichiers de `tests/expected/`. Il vérifie aussi que chaque profil de `tests/fixtures/invalid/` est rejeté par la validation.
+- Après un changement volontaire de la génération, mettez à jour les fichiers attendus avec `tests/run-tests.sh --update` et relisez le diff avant de commiter.
+- `tests/compare-shells.sh` génère les mêmes fixtures avec `manage-profiles.ps1` et compare le résultat à celui de `manage-profiles.sh` (prérequis : `pwsh` et le module `powershell-yaml`).
+
+La CI (`.github/workflows/ci.yml`) exécute ces vérifications sur chaque pull request, avec yq local puis via Docker, ainsi que PSScriptAnalyzer. La comparaison Bash / PowerShell y est informative : elle n'empêche pas la fusion.
+
 ### Conventional Commits
 
 **TOUS les commits doivent respecter la spécification [Conventional Commits](https://www.conventionalcommits.org/).**

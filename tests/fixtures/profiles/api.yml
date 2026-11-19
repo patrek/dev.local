@@ -1,0 +1,33 @@
+# Environnement en liste, commentaire après enabled, groupe service_specific,
+# ports déclarés mais non publiés (expose_ports absent)
+name: api
+description: "API de test"
+enabled: true  # commentaire de fin de ligne
+always_active: true
+docker_profile: null
+
+docker-compose:
+  image: ${API_IMAGE:-nginx}:${API_TAG:-alpine}
+  container_name: api
+  ports:
+    - "8001:80"
+  environment:
+    - SERVICE_NAME=api
+    - API_KEY=${API_KEY:-changeme}
+  healthcheck:
+    test: ["CMD", "curl", "-f", "http://localhost:80/"]
+    interval: 30s
+
+traefik:
+  enabled: true
+  prefix: /api
+  strip_prefix: true
+  docker_port: 80
+  local_port: 8001
+  health_path: /health
+  priority: 20
+
+secrets:
+  - name: API_KEY
+    description: "Clé de l'API de test"
+    default: changeme

@@ -121,6 +121,20 @@ menu:
 config:
     docker compose config
 
+# Développement
+
+[unix]
+[doc("Exécuter les tests des scripts Bash")]
+[group("dev")]
+test:
+    tests/run-tests.sh
+
+[unix]
+[doc("Analyser les scripts Bash avec ShellCheck (via Docker)")]
+[group("dev")]
+lint:
+    docker run --rm -v "$PWD":/mnt:ro -w /mnt koalaman/shellcheck:v0.11.0 -x -S warning launch.sh manage-profiles.sh validate-profiles.sh menu.sh lib/yq.sh tests/run-tests.sh tests/compare-shells.sh
+
 # Fonction interne pour déléguer aux scripts
 
 [windows]
