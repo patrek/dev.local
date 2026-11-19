@@ -114,20 +114,16 @@ function Load-Secrets {
     Write-Host "🔐 Déchiffrement des secrets avec SOPS..." -ForegroundColor Cyan
 
     try {
-        # Utiliser SecureString pour minimiser l'exposition en mémoire
-        $process = Start-Process -FilePath "sops" -ArgumentList "-d", "secrets.env" `
-            -NoNewWindow -Wait -PassThru -RedirectStandardOutput "temp_secrets.tmp" `
-            -RedirectStandardError "temp_errors.tmp"
+        # La sortie de SOPS reste en mémoire : aucun secret en clair n'est écrit sur le disque
+        $decrypted = & sops -d secrets.env 2>$null
 
-        if ($process.ExitCode -ne 0) {
-            $errorContent = Get-Content "temp_errors.tmp" -Raw -ErrorAction SilentlyContinue
-            Remove-Item "temp_secrets.tmp", "temp_errors.tmp" -ErrorAction SilentlyContinue
-            Write-Error "Échec du déchiffrement SOPS. Vérifiez votre configuration AWS/Age"
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "Échec du déchiffrement SOPS (code: $LASTEXITCODE). Vérifiez votre configuration AWS/Age"
+            Write-Warning "Les services démarreront sans secrets"
             return
         }
 
-        # Charger les variables ligne par ligne sans stocker tout le contenu
-        Get-Content "temp_secrets.tmp" | ForEach-Object {
+        $decrypted | ForEach-Object {
             if ($_ -match '^\s*([^#][^=]+)=(.+)$') {
                 $key = $matches[1].Trim()
                 $value = $matches[2].Trim()
@@ -142,20 +138,10 @@ function Load-Secrets {
             }
         }
 
-        # Nettoyer les fichiers temporaires de manière sécurisée
-        if (Test-Path "temp_secrets.tmp") {
-            # Écraser avec des zéros avant suppression
-            $zeros = New-Object byte[] (Get-Item "temp_secrets.tmp").Length
-            [System.IO.File]::WriteAllBytes("temp_secrets.tmp", $zeros)
-            Remove-Item "temp_secrets.tmp" -Force
-        }
-        Remove-Item "temp_errors.tmp" -ErrorAction SilentlyContinue
-
         Write-Host "✅ Secrets chargés de manière sécurisée" -ForegroundColor Green
     }
     catch {
         Write-Error "Erreur lors du déchiffrement : $_"
-        Remove-Item "temp_secrets.tmp", "temp_errors.tmp" -ErrorAction SilentlyContinue
     }
 }
 
