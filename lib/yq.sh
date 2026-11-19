@@ -48,3 +48,15 @@ else
     echo -e "\033[91myq v4+ (mikefarah) ou Docker est requis pour lire les fichiers YAML.\033[0m" >&2
     exit 1
 fi
+
+# Lit plusieurs champs scalaires d'un fichier YAML en un seul appel yq.
+# Usage : read_yaml_fields <fichier> <chemin>...
+# Résultat dans le tableau YAML_FIELDS (même ordre que les chemins, "null" si absent).
+# Le tableau est vide si le fichier est illisible ou n'est pas du YAML valide.
+read_yaml_fields() {
+    local file="$1"
+    shift
+    local expr
+    expr=$(IFS=,; echo "$*")
+    mapfile -t YAML_FIELDS < <(yq e "$expr" "$file" 2>/dev/null)
+}

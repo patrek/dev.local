@@ -36,17 +36,6 @@ value_or_default() {
     fi
 }
 
-# Lit plusieurs champs scalaires d'un fichier YAML en un seul appel yq.
-# Usage : read_yaml_fields <fichier> <chemin>...
-# Résultat dans le tableau YAML_FIELDS (même ordre que les chemins, "null" si absent).
-read_yaml_fields() {
-    local file="$1"
-    shift
-    local expr
-    expr=$(IFS=,; echo "$*")
-    mapfile -t YAML_FIELDS < <(yq e "$expr" "$file" 2>/dev/null)
-}
-
 # Expression yq : noms des volumes nommés de la section docker-compose.volumes d'un profil,
 # un par ligne. Un volume nommé doit être déclaré dans la section volumes: de premier
 # niveau, sinon docker compose refuse le fichier.

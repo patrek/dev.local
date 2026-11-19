@@ -9,6 +9,17 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 # yq local ou via Docker (voir lib/yq.sh)
 source "lib/yq.sh"
 
+# Lit les champs d'un profil utilisés par le menu, en un seul appel yq (voir lib/yq.sh).
+# Résultat dans YAML_FIELDS : name, enabled, always_active, docker_profile.
+# Un profil illisible arrête le menu, comme le faisait un appel yq en échec.
+read_profile_fields() {
+    read_yaml_fields "$1" .name .enabled .always_active .docker_profile
+    if [ "${#YAML_FIELDS[@]}" -eq 0 ]; then
+        echo -e "\033[91mProfil illisible (YAML invalide) : $1\033[0m" >&2
+        exit 1
+    fi
+}
+
 wait_key() {
     echo -e "\n\033[90m[Appuyez sur n'importe quelle touche pour continuer...]\033[0m"
     read -n 1 -s
@@ -86,15 +97,16 @@ EOF
     for profile in profiles/*.yml; do
         [ -f "$profile" ] || continue
         
-        # Use simpler yq extraction to avoid jq errors with undefined variables
-        name=$(yq -r '.name' "$profile")
-        if [ "$name" = "null" ] || [ -z "$name" ]; then 
+        read_profile_fields "$profile"
+
+        name="${YAML_FIELDS[0]}"
+        if [ "$name" = "null" ] || [ -z "$name" ]; then
             name=$(basename "$profile" .yml)
         fi
-        
-        enabled=$(yq -r '.enabled' "$profile")
-        
-        docker_profile=$(yq -r '.docker_profile' "$profile")
+
+        enabled="${YAML_FIELDS[1]}"
+
+        docker_profile="${YAML_FIELDS[3]}"
         if [ "$docker_profile" = "null" ] || [ -z "$docker_profile" ]; then 
             docker_profile="$name"
         fi
@@ -164,16 +176,18 @@ while true; do
             for profile in profiles/*.yml; do
                 [ -f "$profile" ] || continue
                 
+                read_profile_fields "$profile"
+
                 # Vérifier si activé (défaut: true)
-                is_enabled=$(yq -r '.enabled' "$profile")
+                is_enabled="${YAML_FIELDS[1]}"
                 if [ "$is_enabled" = "false" ]; then continue; fi
-                
+
                 # Vérifier si toujours actif (défaut: true)
-                always_active=$(yq -r '.always_active' "$profile")
-                
+                always_active="${YAML_FIELDS[2]}"
+
                 if [ "$always_active" = "false" ]; then
-                    p_name=$(yq -r '.docker_profile' "$profile")
-                    
+                    p_name="${YAML_FIELDS[3]}"
+
                     if [ -n "$p_name" ] && [ "$p_name" != "null" ]; then
                         if [ -z "$profiles_list" ]; then
                             profiles_list="$p_name"
