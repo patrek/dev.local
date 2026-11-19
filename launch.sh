@@ -255,13 +255,13 @@ start_services() {
         echo -e "\033[96m🚀 Démarrage des profils: $PROFILES\033[0m"
         
         # Construire la commande avec --profile pour chaque profil
-        local profile_args=""
+        local profile_args=()
         IFS=',' read -ra PROFILE_ARRAY <<< "$PROFILES"
         for profile in "${PROFILE_ARRAY[@]}"; do
-            profile_args="$profile_args --profile $profile"
+            profile_args+=(--profile "$profile")
         done
-        
-        docker compose $profile_args up -d
+
+        docker compose "${profile_args[@]}" up -d
     else
         unset COMPOSE_PROFILES
         echo -e "\033[96m🚀 Démarrage de tous les services\033[0m"

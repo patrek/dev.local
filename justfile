@@ -20,7 +20,7 @@ start:
 [doc("Démarrer avec profils spécifiques")]
 [group("docker")]
 start-profile profiles:
-    {{launch}} -p {{profiles}} start
+    {{launch}} -p {{quote(profiles)}} start
 
 [doc("Arrêter tous les services")]
 [group("docker")]
@@ -40,7 +40,7 @@ ps:
 [doc("Voir les logs d'un service")]
 [group("docker")]
 logs service="":
-    {{launch}} logs {{service}}
+    {{launch}} logs {{ if service == "" { "" } else { quote(service) } }}
 
 [unix]
 [doc("Exécuter une commande ponctuelle dans un service (ex: just run gulp npx gulp build)")]
@@ -53,7 +53,7 @@ run service *args:
 [doc("Exécuter une commande ponctuelle dans un service (ex: just run gulp npx gulp build)")]
 [group("docker")]
 run service *args:
-    .\launch.ps1 run {{service}} -- {{args}}
+    .\launch.ps1 run {{quote(service)}} -- {{args}}
 
 # Profils
 
