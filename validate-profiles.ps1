@@ -94,7 +94,7 @@ function Get-YamlValue {
         $key = $Path -replace '^\.' -replace '.*\.'
         $content = Get-Content $File -Raw
 
-        if ($content -match "(?m)^[[:space:]]*${key}:[[:space:]]*(.+?)(?:#.*)?$") {
+        if ($content -match "(?m)^\s*${key}:\s*(.+?)(?:#.*)?$") {
             $value = $Matches[1].Trim()
             return $value
         }
@@ -202,7 +202,7 @@ function Test-Values {
 
     # Validation des ports
     $content = Get-Content $ProfilePath -Raw
-    if ($content -match "(?m)^[[:space:]]*ports:") {
+    if ($content -match "(?m)^\s*ports:") {
         if ($content -match '"non"') {
             Write-Error-Message $basename "Valeur de port invalide: 'non' (devrait être 'none' ou un port valide)"
             $hasErrors = $true
@@ -276,8 +276,8 @@ function Test-CrossProfile {
         # Sans expose_ports, les ports du profil ne sont pas publiés : aucun conflit possible
         $exposePorts = Get-YamlValue -File $profile.FullName -Path ".expose_ports" -Default "false"
         $content = Get-Content $profile.FullName -Raw
-        if ($exposePorts -eq "true" -and $content -match "(?m)^[[:space:]]*ports:") {
-            $portMatches = [regex]::Matches($content, '(?m)^[[:space:]]*-[[:space:]]*"?(\d+):')
+        if ($exposePorts -eq "true" -and $content -match "(?m)^\s*ports:") {
+            $portMatches = [regex]::Matches($content, '(?m)^\s*-\s*"?(\d+):')
             foreach ($match in $portMatches) {
                 $hostPort = $match.Groups[1].Value
                 if ($hostPorts.ContainsKey($hostPort)) {

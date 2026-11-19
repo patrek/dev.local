@@ -404,6 +404,7 @@ services:
       - "127.0.0.1:${dozzlePort}:8080"
     environment:
       - DOZZLE_TIMEOUT=15s
+      - DOZZLE_BASE=/logs
       - DOCKER_HOST=tcp://socket-proxy:2375
     extra_hosts:
       - "external-ip:host-gateway"
