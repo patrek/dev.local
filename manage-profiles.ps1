@@ -750,7 +750,8 @@ function Protect-SecretsContent {
 # Retourne une table nom -> valeur par défaut.
 function Get-SecretVariables {
     $profiles = Get-ChildItem -Path $ProfilesDir -Filter "*.yml" -ErrorAction SilentlyContinue
-    $secretVars = @{}
+    # Table sensible à la casse, comme le tableau associatif de manage-profiles.sh
+    $secretVars = [hashtable]::new()
     
     foreach ($pro in $profiles) {
         $data = Read-ProfileYaml -Path $pro.FullName
@@ -761,8 +762,8 @@ function Get-SecretVariables {
         
         $profileName = if ($data.name) { $data.name } else { $pro.BaseName }
         
-        # Méthode 1 : Lire la section secrets: si elle existe
-        if ($data.secrets) {
+        # Méthode 1 : section secrets: (même vide, elle désactive l'auto-détection)
+        if ($data.Keys -ccontains 'secrets') {
             foreach ($secret in $data.secrets) {
                 if ($secret.name) {
                     $secretName = $secret.name
@@ -777,26 +778,21 @@ function Get-SecretVariables {
             }
         }
         else {
-            # Méthode 2 (fallback) : Scanner les ${VAR:-default} dans environment:
-            # Pour cela, on a besoin du contenu brut ou d'inspecter les valeurs de l'objet environment
-            # L'approche Regex est plus simple pour trouver tous les patterns ${...} dans le fichier,
-            # indépendamment de la structure. Mais essayons de le faire via l'objet pour environment.
-            
-            if ($data.'docker-compose' -and $data.'docker-compose'.environment) {
-                $env = $data.'docker-compose'.environment
-                # environment peut être une liste ou un hashtable (si converti de object)
-                # YAML environment est souvent une liste de strings "KEY=VALUE"
-                # environment peut être une liste ou un hashtable
-                # S'il contient des strings simples "KEY=VALUE", on cherche le pattern
-                foreach ($envLine in $env) {
-                    if ($envLine -match '\$\{([A-Z_][A-Z0-9_]*)(:-([^}]*))?\}') {
-                        $varName = $matches[1]
-                        $defaultValue = if ($matches[3]) { $matches[3] } else { 'changeme' }
-                        
-                        if (-not $secretVars.ContainsKey($varName)) {
-                            $secretVars[$varName] = $defaultValue
-                            Write-Host "  📌 [$profileName] $varName (auto-détecté)" -ForegroundColor DarkGray
-                        }
+            # Méthode 2 (fallback, profil sans section secrets:) : variables ${VAR:-defaut}
+            # des entrées de docker-compose.environment uniquement (liste ou map).
+            # L'image, les ports et les commentaires ne sont pas des secrets.
+            # Même motif que manage-profiles.sh : sensible à la casse, ":-" obligatoire
+            # (un ${VAR} nu n'est pas un secret), toutes les occurrences d'une entrée.
+            $environment = $data.'docker-compose'.environment
+            $envValues = if ($environment -is [System.Collections.IDictionary]) { $environment.Values } else { $environment }
+            foreach ($envValue in $envValues) {
+                foreach ($found in [regex]::Matches([string]$envValue, '\$\{([A-Z_][A-Z0-9_]*):-([^}\n]*)\}')) {
+                    $varName = $found.Groups[1].Value
+                    $defaultValue = if ($found.Groups[2].Value) { $found.Groups[2].Value } else { 'changeme' }
+
+                    if (-not $secretVars.ContainsKey($varName)) {
+                        $secretVars[$varName] = $defaultValue
+                        Write-Host "  📌 [$profileName] $varName (auto-détecté)" -ForegroundColor DarkGray
                     }
                 }
             }
