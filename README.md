@@ -571,7 +571,7 @@ Cette section documente explicitement les secrets requis :
 
 La commande `sync-secrets` utilise cette section pour mettre à jour automatiquement `secrets.env`.
 
-Si un profil n'a pas de section `secrets:`, `sync-secrets` se rabat sur les variables `${VAR:-défaut}` des entrées de `docker-compose.environment`. Les variables utilisées ailleurs (image, ports) ou dans des commentaires ne sont jamais considérées comme des secrets.
+Si un profil n'a pas de section `secrets:`, `sync-secrets` se rabat sur les variables `${VAR:-défaut}` des entrées de `docker-compose.environment`. Les variables utilisées ailleurs (image, ports) ou dans des commentaires ne sont jamais considérées comme des secrets. Un `${VAR}` sans valeur par défaut n'en est pas un non plus, et une section `secrets:` vide désactive cette détection. La commande `list-secrets` affiche les noms détectés sans SOPS ni déchiffrement.
 name: mon-service
 enabled: true
 
