@@ -68,6 +68,11 @@ get_config_value() {
     fi
 }
 
+# Profil AWS : AWS_PROFILE s'il est défini, sinon aws.profile de config.yml
+get_aws_profile() {
+    echo "${AWS_PROFILE:-$(get_config_value .aws.profile "ESG-DV-PowerUser-SSO")}"
+}
+
 # Valider Docker Compose
 validate_docker_compose() {
     if ! command -v docker &> /dev/null; then
@@ -313,7 +318,7 @@ connect_aws_sso() {
     fi
     
     echo -e "\033[96m🔐 Connexion AWS SSO...\033[0m"
-    aws sso login --profile "$(get_config_value .aws.profile "ESG-DV-PowerUser-SSO")"
+    aws sso login --profile "$(get_aws_profile)"
 }
 
 # AWS Identity
@@ -324,7 +329,7 @@ show_aws_identity() {
     fi
     
     echo -e "\033[96m🪪 Identité AWS:\033[0m"
-    aws sts get-caller-identity
+    aws sts get-caller-identity --profile "$(get_aws_profile)"
 }
 
 # Docker ECR Login
@@ -341,7 +346,7 @@ connect_ecr_login() {
     echo -e "\033[96m🐳 Connexion Docker à AWS ECR...\033[0m"
 
     # Le mot de passe passe directement d'un processus à l'autre, sans fichier temporaire
-    aws ecr get-login-password --region "$(get_config_value .aws.region "ca-central-1")" | docker login --username AWS --password-stdin "$ecr_url"
+    aws ecr get-login-password --profile "$(get_aws_profile)" --region "$(get_config_value .aws.region "ca-central-1")" | docker login --username AWS --password-stdin "$ecr_url"
     local statuses=("${PIPESTATUS[@]}")
 
     if [ "${statuses[0]}" -ne 0 ]; then

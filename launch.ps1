@@ -13,7 +13,7 @@
 
 .PARAMETER runArgs
     Pour la commande run : la commande à exécuter dans le conteneur, après le nom du service.
-    Placer "--" avant les arguments qui commencent par un tiret.
+    Placer "--" avant les arguments qui commencent par un tiret (inutile avec "just run").
 
 .EXAMPLE
     .\launch.ps1
@@ -331,6 +331,14 @@ function Get-ConfigValue {
     return [string]$value
 }
 
+# Profil AWS : AWS_PROFILE s'il est défini, sinon aws.profile de config.yml
+function Get-AwsProfile {
+    if ($env:AWS_PROFILE) {
+        return $env:AWS_PROFILE
+    }
+    return Get-ConfigValue @('aws', 'profile') 'ESG-DV-PowerUser-SSO'
+}
+
 # AWS SSO
 function Connect-AwsSso {
     if (-not (Get-Command aws -ErrorAction SilentlyContinue)) {
@@ -339,7 +347,7 @@ function Connect-AwsSso {
     }
     
     Write-Host "🔐 Connexion AWS SSO..." -ForegroundColor Cyan
-    aws sso login --profile (Get-ConfigValue @('aws', 'profile') 'ESG-DV-PowerUser-SSO')
+    aws sso login --profile (Get-AwsProfile)
 }
 
 # AWS Identity
@@ -350,7 +358,7 @@ function Show-AwsIdentity {
     }
     
     Write-Host "🪪 Identité AWS:" -ForegroundColor Cyan
-    aws sts get-caller-identity
+    aws sts get-caller-identity --profile (Get-AwsProfile)
 }
 
 # Docker ECR Login
@@ -366,7 +374,7 @@ function Connect-EcrLogin {
     Write-Host "🐳 Connexion Docker à AWS ECR..." -ForegroundColor Cyan
 
     # Le mot de passe reste en mémoire et passe à docker par l'entrée standard, sans fichier temporaire
-    $password = aws ecr get-login-password --region $region
+    $password = aws ecr get-login-password --profile (Get-AwsProfile) --region $region
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrEmpty($password)) {
         Write-Error "Échec de récupération du mot de passe ECR"
         return 1

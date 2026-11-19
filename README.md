@@ -1068,7 +1068,7 @@ just start
 
 ### Configuration du profil AWS
 
-Le profil AWS (`just aws-sso`) et la région (`just ecr-login`) se règlent dans `config.yml` :
+Le profil AWS (`just aws-sso`, `just aws-id`, `just ecr-login`) et la région (`just ecr-login`) se règlent dans `config.yml` :
 
 ```yaml
 aws:
@@ -1076,7 +1076,7 @@ aws:
   region: ca-central-1
 ```
 
-Sans cette section, ces deux valeurs sont utilisées par défaut.
+Sans cette section, ces deux valeurs sont utilisées par défaut. La variable d'environnement `AWS_PROFILE`, si elle est définie, a priorité sur `aws.profile`.
 
 ## 🐧 Support Linux/macOS
 

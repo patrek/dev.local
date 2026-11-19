@@ -16,7 +16,8 @@ registries:
     url: <id>.dkr.ecr.ca-central-1.amazonaws.com
     description: "AWS ECR - Elastic Container Registry"
 
-# AWS - utilisé par "just aws-sso" (profil) et "just ecr-login" (région)
+# AWS - profil utilisé par "just aws-sso", "just aws-id" et "just ecr-login", région par "just ecr-login"
+# La variable d'environnement AWS_PROFILE, si elle est définie, a priorité sur "profile"
 aws:
   profile: ESG-DV-PowerUser-SSO
   region: ca-central-1
