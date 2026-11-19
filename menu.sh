@@ -2,22 +2,34 @@
 # Menu interactif pour Dev.Local 2.0
 # Interface simple pour gérer services et profils
 
-set -e
+# Pas de "set -e" : une commande en échec ne doit pas fermer le menu (voir run_step).
+# Les étapes dont l'échec doit arrêter le script le vérifient donc elles-mêmes.
 
-cd "$(dirname "${BASH_SOURCE[0]}")"
+cd "$(dirname "${BASH_SOURCE[0]}")" || exit 1
 
 # yq local ou via Docker (voir lib/yq.sh)
-source "lib/yq.sh"
+source "lib/yq.sh" || exit 1
 
 # Lit les champs d'un profil utilisés par le menu, en un seul appel yq (voir lib/yq.sh).
 # Résultat dans YAML_FIELDS : name, enabled, always_active, docker_profile.
-# Un profil illisible arrête le menu, comme le faisait un appel yq en échec.
+# Un profil illisible est signalé et ignoré par l'appelant (retour 1), comme dans menu.ps1.
 read_profile_fields() {
     read_yaml_fields "$1" .name .enabled .always_active .docker_profile
     if [ "${#YAML_FIELDS[@]}" -eq 0 ]; then
-        echo -e "\033[91mProfil illisible (YAML invalide) : $1\033[0m" >&2
-        exit 1
+        echo -e "\033[93m⚠️  Erreur lecture $(basename "$1") (YAML invalide)\033[0m" >&2
+        return 1
     fi
+}
+
+# Exécute une commande du menu. Un échec est signalé avec son code de sortie,
+# sans fermer le menu.
+run_step() {
+    "$@"
+    local status=$?
+    if [ "$status" -ne 0 ]; then
+        echo -e "\n\033[91m⚠️  La commande a échoué (code de sortie : $status)\033[0m"
+    fi
+    return 0
 }
 
 wait_key() {
@@ -97,7 +109,7 @@ EOF
     for profile in profiles/*.yml; do
         [ -f "$profile" ] || continue
         
-        read_profile_fields "$profile"
+        read_profile_fields "$profile" || continue
 
         name="${YAML_FIELDS[0]}"
         if [ "$name" = "null" ] || [ -z "$name" ]; then
@@ -126,11 +138,12 @@ EOF
     echo ""
     
     read -p "Entrez les profils (noms ou numéros, séparés par virgules): " input
+    selected_profiles=""
     if [ -n "$input" ]; then
-        selected_profiles=""
         IFS=',' read -ra ADDR <<< "$input"
         for val in "${ADDR[@]}"; do
             val=$(echo "$val" | tr -d '[:space:]')
+            [ -n "$val" ] || continue
             # Check if number
             if [[ "$val" =~ ^[0-9]+$ ]]; then
                 if [ -n "${docker_profiles[$val]}" ]; then
@@ -148,15 +161,18 @@ EOF
                 fi
             fi
         done
-        
-        if [ -n "$selected_profiles" ]; then
-            LAST_PROFILES="$selected_profiles"
-            echo -e "\033[96m▶️  Démarrage avec profils: $selected_profiles\033[0m"
-            echo -e "\033[90mCommande: docker compose --profile $(echo $selected_profiles | sed 's/,/ --profile /g') up -d\033[0m"
-            ./launch.sh --profile "$selected_profiles" up
-            wait_key
-        fi
     fi
+
+    # Sans profil valide, rien n'est lancé
+    if [ -z "$selected_profiles" ]; then
+        echo -e "\033[93mAucun profil valide sélectionné - rien n'a été démarré\033[0m"
+        return
+    fi
+
+    LAST_PROFILES="$selected_profiles"
+    echo -e "\033[96m▶️  Démarrage avec profils: $selected_profiles\033[0m"
+    echo -e "\033[90mCommande: docker compose --profile $(echo $selected_profiles | sed 's/,/ --profile /g') up -d\033[0m"
+    run_step ./launch.sh --profile "$selected_profiles" up
 }
 
 # Variable globale pour stocker les derniers profils utilisés
@@ -165,7 +181,11 @@ LAST_PROFILES=""
 # Boucle principale
 while true; do
     show_menu
-    read -p "Choisissez une option (0-17) ou 'q' pour quitter: " choice
+    # Fin de l'entrée (pas de terminal, Ctrl+D) : quitter au lieu de boucler
+    if ! read -p "Choisissez une option (0-17) ou 'q' pour quitter: " choice; then
+        echo ""
+        exit 0
+    fi
     
     case $choice in
         1)
@@ -176,7 +196,7 @@ while true; do
             for profile in profiles/*.yml; do
                 [ -f "$profile" ] || continue
                 
-                read_profile_fields "$profile"
+                read_profile_fields "$profile" || continue
 
                 # Vérifier si activé (défaut: true)
                 is_enabled="${YAML_FIELDS[1]}"
@@ -204,23 +224,24 @@ while true; do
                 echo -e "\033[90mProfils inclus: $unique_profiles\033[0m"
                 echo -e "\033[90mCommande: docker compose --profile $(echo $unique_profiles | sed 's/,/ --profile /g') up -d\033[0m"
                 LAST_PROFILES="$unique_profiles"
-                ./launch.sh --profile "$unique_profiles" up
+                run_step ./launch.sh --profile "$unique_profiles" up
             else
                 echo -e "\033[90mCommande: docker compose up -d\033[0m"
                 LAST_PROFILES=""
-                ./launch.sh up
+                run_step ./launch.sh up
             fi
             
             wait_key
             ;;
-        m)
+        m|M)
             echo -e "\033[96m▶️  Démarrage des services minimums (sans profils)...\033[0m"
             echo -e "\033[90mCommande: docker compose up -d\033[0m"
-            ./launch.sh up
+            run_step ./launch.sh up
             wait_key
             ;;
         2)
             show_profiles
+            wait_key
             ;;
         3)
             echo -e "\033[93m🔄 Recréation des services...\033[0m"
@@ -232,89 +253,89 @@ while true; do
                 # Il suffit de passer les profils à la commande, ou de laisser le script gérer si on l'appelle correctement
                 
                 # Méthode 1: Appel direct avec profils
-                ./launch.sh --profile "$LAST_PROFILES" recreate
+                run_step ./launch.sh --profile "$LAST_PROFILES" recreate
             else
                 echo -e "\033[90mCommande: docker compose down && docker compose up -d\033[0m"
-                ./launch.sh recreate
+                run_step ./launch.sh recreate
             fi
             wait_key
             ;;
         4)
             echo -e "\033[91m⏹️  Arrêt de tous les services...\033[0m"
             echo -e "\033[90mCommande: docker compose down\033[0m"
-            ./launch.sh down
+            run_step ./launch.sh down
             wait_key
             ;;
         5)
             echo -e "\033[96m📋 Containers actifs:\033[0m"
-            echo -e "\033[90mCommande: docker compose ps\033[0m"
-            docker compose ps
+            echo -e "\033[90mCommande: ./launch.sh ps\033[0m"
+            run_step ./launch.sh ps
             wait_key
             ;;
         6)
             echo -e "\033[96m➕ Ajout d'un nouveau profil...\033[0m"
             echo -e "\033[90mCommande: ./manage-profiles.sh add\033[0m"
-            ./manage-profiles.sh add
+            run_step ./manage-profiles.sh add
             wait_key
             ;;
         7)
             echo -e "\033[96m📝 Liste des profils...\033[0m"
             echo -e "\033[90mCommande: ./manage-profiles.sh list\033[0m"
-            ./manage-profiles.sh list
+            run_step ./manage-profiles.sh list
             wait_key
             ;;
         8)
             echo -e "\033[93m🔧 Regénération de docker-compose.yml...\033[0m"
             echo -e "\033[90mCommande: ./manage-profiles.sh generate\033[0m"
-            ./manage-profiles.sh generate
+            run_step ./manage-profiles.sh generate
             wait_key
             ;;
         9)
             echo -e "\033[96m✅ Validation des profils...\033[0m"
             echo -e "\033[90mCommande: ./validate-profiles.sh\033[0m"
-            ./validate-profiles.sh
+            run_step ./validate-profiles.sh
             wait_key
             ;;
         10)
             echo -e "\033[96m✏️  Édition des secrets...\033[0m"
             echo -e "\033[90mCommande: ./launch.sh edit-secrets\033[0m"
-            ./launch.sh edit-secrets
+            run_step ./launch.sh edit-secrets
             wait_key
             ;;
         11)
             echo -e "\033[96m👁️  Affichage des secrets...\033[0m"
             echo -e "\033[90mCommande: ./launch.sh view-secrets\033[0m"
-            ./launch.sh view-secrets
+            run_step ./launch.sh view-secrets
             wait_key
             ;;
         12)
             echo -e "\033[96m🆕 Initialisation de secrets.env...\033[0m"
             echo -e "\033[90mCommande: ./manage-profiles.sh init-secrets\033[0m"
-            ./manage-profiles.sh init-secrets
+            run_step ./manage-profiles.sh init-secrets
             wait_key
             ;;
         13)
             echo -e "\033[96m🔄 Synchronisation de secrets.env...\033[0m"
             echo -e "\033[90mCommande: ./manage-profiles.sh sync-secrets\033[0m"
-            ./manage-profiles.sh sync-secrets
+            run_step ./manage-profiles.sh sync-secrets
             wait_key
             ;;
         14)
             echo -e "\033[96m🔐 Connexion AWS SSO...\033[0m"
             echo -e "\033[90mCommande: ./launch.sh sso\033[0m"
-            ./launch.sh sso
+            run_step ./launch.sh sso
             wait_key
             ;;
         15)
             echo -e "\033[96m🪪 Identité AWS actuelle:\033[0m"
             echo -e "\033[90mCommande: ./launch.sh id\033[0m"
-            ./launch.sh id
+            run_step ./launch.sh id
             wait_key
             ;;
         16)
             echo -e "\033[96m🐳 Connexion Docker à AWS ECR...\033[0m"
             echo -e "\033[90mCommande: ./launch.sh ecr-login\033[0m"
-            ./launch.sh ecr-login
+            run_step ./launch.sh ecr-login
             wait_key
             ;;
         17)
