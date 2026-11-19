@@ -786,7 +786,7 @@ just run gulp npx gulp build
 just start-profile tools
 ```
 
-- `HOST_UID` et `HOST_GID` sont exportés par `launch.sh`.
+- `HOST_UID` et `HOST_GID` sont exportés par `launch.sh` et, sous Linux et macOS, par `launch.ps1` (sous Windows, ils restent absents).
 - `run` ne publie pas les ports du service ; utilisez le profil démarré pour un serveur de dev.
 - Sous PowerShell, placez `--` avant la commande : `.\launch.ps1 run gulp -- npx gulp build --production`.
 

@@ -211,7 +211,7 @@ Ces commandes n'ont pas accès aux secrets SOPS : seuls les scripts `launch.*` l
 | `SOPS_AGE_KEY_FILE=/path/to/keys.txt` | Clé Age custom |
 | `AWS_PROFILE=<profil>` | Profil AWS, prioritaire sur `aws.profile` de `config.yml` |
 | `YQ_IMAGE=mikefarah/yq:<version>` | Image Docker de `yq` utilisée par les scripts Bash |
-| `HOST_UID`, `HOST_GID` | Utilisateur des conteneurs « outils », exportés par `launch.sh` |
+| `HOST_UID`, `HOST_GID` | Utilisateur des conteneurs « outils », exportés par `launch.sh` (et par `launch.ps1` sous Linux/macOS) |
 | `<SERVICE>_IMAGE`, `<SERVICE>_TAG` | Image et tag d'un service, selon le profil |
 
 ## 💡 Astuces

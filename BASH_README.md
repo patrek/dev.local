@@ -71,7 +71,7 @@ Les deux familles de scripts acceptent les mêmes actions ; seule la syntaxe des
 
 ### Différences de comportement
 - **Validation avant génération** : `manage-profiles.sh generate` exécute d'abord `validate-profiles.sh` et s'arrête en cas d'erreur.
-- **`HOST_UID` / `HOST_GID`** : exportés par `launch.sh` pour les profils « outils » (voir [Exemple 4 bis](README.md#exemple-4-bis--outils-de-build-dans-docker-gulp-npm-)).
+- **`HOST_UID` / `HOST_GID`** : exportés par `launch.sh` (et par `launch.ps1` sous Linux/macOS) pour les profils « outils » (voir [Exemple 4 bis](README.md#exemple-4-bis--outils-de-build-dans-docker-gulp-npm-)).
 - **Secrets** : `launch.sh` n'exporte les secrets que pour sa propre exécution ; ils n'apparaissent pas dans votre shell.
 
 ### Adaptations techniques
