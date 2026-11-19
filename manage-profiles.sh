@@ -1090,14 +1090,26 @@ init_secrets() {
         return 1
     fi
     
+    if [ ! -f ".sops.yaml" ]; then
+        echo -e "\033[91mFichier .sops.yaml introuvable. Configurez SOPS d'abord (voir docs/sops_age_guide.md).\033[0m"
+        return 1
+    fi
+
     # Copier l'exemple
     if [ -f "secrets.env.example" ]; then
         cp "secrets.env.example" "$SECRETS_FILE"
     else
         echo "# Secrets file - Edit with: sops secrets.env" > "$SECRETS_FILE"
     fi
-    
-    echo -e "\n\033[92m✅ Fichier $SECRETS_FILE créé\033[0m"
+
+    # Chiffrer immédiatement : un secrets.env en clair ne doit jamais rester sur disque
+    if ! sops --encrypt --in-place "$SECRETS_FILE"; then
+        rm -f "$SECRETS_FILE"
+        echo -e "\033[91mÉchec du chiffrement SOPS - $SECRETS_FILE supprimé. Vérifiez .sops.yaml.\033[0m"
+        return 1
+    fi
+
+    echo -e "\n\033[92m✅ Fichier $SECRETS_FILE créé et chiffré\033[0m"
     echo -e "\033[93m📝 Éditez-le maintenant avec: sops $SECRETS_FILE\033[0m"
     
     read -p $'\nOuvrir l\'éditeur SOPS maintenant ? (O/n): ' open_editor

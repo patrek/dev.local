@@ -873,6 +873,11 @@ function Initialize-Secrets {
         return
     }
     
+    if (-not (Test-Path ".sops.yaml")) {
+        Write-Error "Fichier .sops.yaml introuvable. Configurez SOPS d'abord (voir docs/sops_age_guide.md)."
+        return
+    }
+
     # Copier l'exemple
     if (Test-Path "secrets.env.example") {
         Copy-Item "secrets.env.example" $SecretsFile
@@ -880,8 +885,16 @@ function Initialize-Secrets {
     else {
         "# Secrets file - Edit with: sops secrets.env`n" | Out-File $SecretsFile -Encoding UTF8
     }
-    
-    Write-Host "`n✅ Fichier $SecretsFile créé" -ForegroundColor Green
+
+    # Chiffrer immédiatement : un secrets.env en clair ne doit jamais rester sur disque
+    & sops --encrypt --in-place $SecretsFile
+    if ($LASTEXITCODE -ne 0) {
+        Remove-Item $SecretsFile -Force -ErrorAction SilentlyContinue
+        Write-Error "Échec du chiffrement SOPS - $SecretsFile supprimé. Vérifiez .sops.yaml."
+        return
+    }
+
+    Write-Host "`n✅ Fichier $SecretsFile créé et chiffré" -ForegroundColor Green
     Write-Host "📝 Éditez-le maintenant avec: sops $SecretsFile" -ForegroundColor Yellow
     
     if ((Read-Host "`nOuvrir l'éditeur SOPS maintenant ? (O/n)") -ne 'n') {
