@@ -509,8 +509,9 @@ Les profils sont des fichiers YAML dans le dossier `profiles/` :
 name: mon-service
 description: "Description du service"
 enabled: true
+expose_ports: false  # true pour publier la section ports (voir ci-dessous)
 
-# Configuration Docker Compose (copié tel quel)
+# Configuration Docker Compose (copié tel quel, sauf ports)
 docker-compose:
   image: myregistry/service:latest
   container_name: mon-service
@@ -547,6 +548,16 @@ metadata:
     - backend
     - production
 ```
+
+### Publication des ports (`expose_ports`)
+
+Par défaut, la section `ports:` d'un profil **n'est pas reprise** dans `docker-compose.yml` : le service n'est joignable que via Traefik, ce qui laisse le port local libre pour lancer le même service hors Docker (failover).
+
+Pour publier les ports d'un profil, ajoutez `expose_ports: true` à la racine du profil :
+
+- les ports sont liés à `127.0.0.1` (`"8000:8000"` devient `"127.0.0.1:8000:8000"`) ;
+- pour exposer un port sur le réseau local, précisez l'IP : `"0.0.0.0:8000:8000"` ;
+- la validation ne signale les conflits de ports qu'entre profils qui les publient.
 
 ### Section `secrets:` (recommandée)
 

@@ -162,6 +162,30 @@ normalize_block() {
     printf '%s' "$result"
 }
 
+# Lie une entrée de port (syntaxe courte) à 127.0.0.1 si elle ne précise pas d'IP hôte.
+#   "8090:80" -> "127.0.0.1:8090:80"      "80" -> "127.0.0.1::80"
+# Les entrées avec IP explicite (ex: "0.0.0.0:8090:80") et la syntaxe longue sont conservées.
+bind_port_to_localhost() {
+    local line="$1"
+    local pattern='^([[:space:]]*-[[:space:]]*["'"'"']?)([^"'"'"'#[:space:]]+)(.*)$'
+
+    if [[ "$line" =~ $pattern ]]; then
+        local prefix="${BASH_REMATCH[1]}" spec="${BASH_REMATCH[2]}" rest="${BASH_REMATCH[3]}"
+        if [[ "$spec" != *: ]]; then
+            # Compter les ':' en ignorant ceux des ${VAR:-defaut}
+            local outside_vars
+            outside_vars=$(echo "$spec" | sed 's/\${[^}]*}//g')
+            local colons="${outside_vars//[^:]/}"
+            case "${#colons}" in
+                0) spec="127.0.0.1::$spec" ;;
+                1) spec="127.0.0.1:$spec" ;;
+            esac
+        fi
+        line="${prefix}${spec}${rest}"
+    fi
+    echo "$line"
+}
+
 # Charger la configuration
 load_config() {
     [ -f "$CONFIG_FILE" ] || return 0
@@ -259,9 +283,13 @@ add_profile() {
     [ -z "$local_port" ] && local_port=$docker_port
     
     # Port mapping docker-compose (host:container) can be same as local_port:docker_port or different
-    read -p "Port binding Docker (host:container) (Entrée pour utiliser $local_port:$docker_port, 'none' pour aucun): " host_binding
-    if [ -z "$host_binding" ]; then
-        host_binding="$local_port:$docker_port"
+    # Par défaut le service n'est joignable que via Traefik ; publier un port est optionnel
+    read -p "Publier aussi un port sur l'hôte (hôte:conteneur, ex: 9000:$docker_port, Entrée pour aucun): " host_binding
+    expose_ports="false"
+    ports_section=""
+    if [ -n "$host_binding" ] && [ "$host_binding" != "none" ]; then
+        expose_ports="true"
+        ports_section=$'\n'"  ports:"$'\n'"    - \"$host_binding\""
     fi
     
     echo -e "\n\033[93m🔑 Activation du service\033[0m"
@@ -331,12 +359,11 @@ description: "$description"
 enabled: true
 always_active: $always_active
 docker_profile: $docker_profile
+expose_ports: $expose_ports
 
 docker-compose:
   image: $image
-  container_name: $name
-  ports:
-    - "$host_binding"
+  container_name: $name$ports_section
   environment:
 $all_env
   healthcheck:
@@ -455,7 +482,7 @@ EOF
     for profile in "$PROFILES_DIR"/*.yml; do
         [ -f "$profile" ] || continue
         
-        read_yaml_fields "$profile" .enabled .name .always_active .docker_profile
+        read_yaml_fields "$profile" .enabled .name .always_active .docker_profile .expose_ports
         local enabled
         enabled=$(value_or_default "${YAML_FIELDS[0]}" true)
         if [ "$enabled" != "true" ]; then
@@ -470,6 +497,9 @@ EOF
         # Chaîne vide si docker_profile est absent ou null
         local docker_profile
         docker_profile=$(value_or_default "${YAML_FIELDS[3]}" "")
+        # Sans expose_ports, la section ports est retirée : le service passe par Traefik
+        local expose_ports
+        expose_ports=$(value_or_default "${YAML_FIELDS[4]}" false)
         echo -e "  \033[92m✅ Ajout : $(basename "$profile" .yml)\033[0m"
 
         # Charger les variables partagées pour ce service
@@ -488,17 +518,26 @@ EOF
         # Traiter la section environment pour injecter les variables partagées
         local filtered_compose=""
         local in_ports=false
+        local ports_ignored=false
         local environment_block=""
         local environment_indent=""
 
         while IFS= read -r line; do
-            # Gérer la section ports
+            # Gérer la section ports : publiée sur 127.0.0.1 si expose_ports, retirée sinon
             if echo "$line" | grep -q "^  ports:"; then
                 in_ports=true
+                if [ "$expose_ports" = "true" ]; then
+                    filtered_compose="${filtered_compose}${line}"$'\n'
+                else
+                    ports_ignored=true
+                fi
                 continue
             fi
             if [ "$in_ports" = true ]; then
                 if echo "$line" | grep -q "^    "; then
+                    if [ "$expose_ports" = "true" ]; then
+                        filtered_compose="${filtered_compose}$(bind_port_to_localhost "$line")"$'\n'
+                    fi
                     continue
                 else
                     in_ports=false
@@ -526,6 +565,10 @@ EOF
 
             filtered_compose="${filtered_compose}${line}"$'\n'
         done <<< "$compose_section"
+
+        if [ "$ports_ignored" = true ]; then
+            echo -e "    \033[90m🔒 Ports non publiés (expose_ports: true pour les publier sur 127.0.0.1)\033[0m"
+        fi
 
         # Gérer le cas où le fichier se termine dans un bloc environment
         if [ -n "$environment_indent" ] && [ -n "$environment_block" ]; then

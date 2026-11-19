@@ -178,8 +178,14 @@ function Add-Profile {
     $localPort = Read-Host "Port exposé localement (via Traefik host) (ex: 8001)"
     if ([string]::IsNullOrWhiteSpace($localPort)) { $localPort = $dockerPort }
 
-    $hostBinding = Read-Host "Port binding Docker (host:container) (Entrée pour utiliser ${localPort}:${dockerPort}, 'none' pour aucun)"
-    if ([string]::IsNullOrWhiteSpace($hostBinding)) { $hostBinding = "${localPort}:${dockerPort}" }
+    # Par défaut le service n'est joignable que via Traefik ; publier un port est optionnel
+    $hostBinding = Read-Host "Publier aussi un port sur l'hôte (hôte:conteneur, ex: 9000:${dockerPort}, Entrée pour aucun)"
+    $exposePorts = $false
+    $portsSection = ""
+    if (-not [string]::IsNullOrWhiteSpace($hostBinding) -and $hostBinding -ne 'none') {
+        $exposePorts = $true
+        $portsSection = "`n  ports:`n    - `"$hostBinding`""
+    }
     
     Write-Host "`n🔑 Activation du service" -ForegroundColor Yellow
     $alwaysActive = (Read-Host "Service toujours actif (démarré par défaut) ? (O/n)") -ne 'n'
@@ -254,12 +260,11 @@ description: "$description"
 enabled: true
 always_active: $($alwaysActive.ToString().ToLower())
 docker_profile: $dockerProfileValue
+expose_ports: $($exposePorts.ToString().ToLower())
 
 docker-compose:
   image: $image
-  container_name: $name
-  ports:
-    - "$hostBinding"
+  container_name: $name$portsSection
   environment:
 $allEnv
   healthcheck:
@@ -291,6 +296,26 @@ metadata:
     # Proposer de regénérer docker-compose.yml
     if ((Read-Host "`nRegénérer docker-compose.yml maintenant ? (O/n)") -ne 'n') {
         Generate-DockerCompose
+    }
+}
+
+# Lie un port (syntaxe courte) à 127.0.0.1 s'il ne précise pas d'IP hôte.
+#   "8090:80" -> "127.0.0.1:8090:80"      "80" -> "127.0.0.1::80"
+# Les ports avec IP explicite (ex: "0.0.0.0:8090:80") et la syntaxe longue sont conservés.
+function ConvertTo-LocalhostPortBinding {
+    param($Port)
+
+    if ($Port -isnot [string] -and $Port -isnot [ValueType]) { return $Port }
+
+    $spec = [string]$Port
+    # Compter les ':' en ignorant ceux des ${VAR:-defaut}
+    $outsideVars = $spec -replace '\$\{[^}]*\}', ''
+    $colons = ($outsideVars.ToCharArray() | Where-Object { $_ -eq ':' }).Count
+
+    switch ($colons) {
+        0 { return "127.0.0.1::$spec" }
+        1 { return "127.0.0.1:$spec" }
+        default { return $spec }
     }
 }
 
@@ -408,9 +433,15 @@ services:
             # Mais comme on lit le fichier à chaque itération, c'est acceptable de modifier l'objet retourné.
             $composeData = $data.'docker-compose'
             
-            # Retirer la section ports (gérée via Traefik)
+            # Section ports : publiée sur 127.0.0.1 si expose_ports, retirée sinon (service via Traefik)
             if ($composeData.Contains('ports')) {
-                $composeData.Remove('ports')
+                if ($data.expose_ports -eq $true) {
+                    $composeData.ports = @($composeData.ports | ForEach-Object { ConvertTo-LocalhostPortBinding -Port $_ })
+                }
+                else {
+                    $composeData.Remove('ports')
+                    Write-Host "    🔒 Ports non publiés (expose_ports: true pour les publier sur 127.0.0.1)" -ForegroundColor DarkGray
+                }
             }
             
             # Préparer l'injection des variables partagées sans polluer les données YAML (pas de faux entries)

@@ -23,7 +23,7 @@ source "lib/yq.sh"
 
 # Champs lus dans chaque profil, en un seul appel yq par fichier
 PROFILE_FIELDS=(
-    .name .enabled .always_active .docker_profile
+    .name .enabled .always_active .docker_profile .expose_ports
     .docker-compose.image .docker-compose.container_name
     .traefik.enabled .traefik.prefix .traefik.docker_port
     .traefik.local_port .traefik.priority
@@ -165,6 +165,13 @@ validate_values() {
         has_errors=1
     fi
 
+    local expose_ports
+    expose_ports=$(get_value "$profile" ".expose_ports" "false")
+    if [ "$expose_ports" != "true" ] && [ "$expose_ports" != "false" ]; then
+        error "$basename" "Champ 'expose_ports' doit être true ou false (trouvé: '$expose_ports')"
+        has_errors=1
+    fi
+
     # Validation des ports
     if grep -q "^[[:space:]]*ports:" "$profile"; then
         local port_line
@@ -248,7 +255,8 @@ validate_cross_profile() {
         fi
 
         # Vérifier les conflits de ports (uniquement si format standard port:port)
-        if grep -q "^[[:space:]]*ports:" "$profile"; then
+        # Sans expose_ports, les ports du profil ne sont pas publiés : aucun conflit possible
+        if [ "$(get_value "$profile" ".expose_ports" "false")" = "true" ] && grep -q "^[[:space:]]*ports:" "$profile"; then
             while IFS= read -r port_line; do
                 if [[ "$port_line" =~ ^[[:space:]]*-[[:space:]]*\"?([0-9]+): ]]; then
                     local host_port="${BASH_REMATCH[1]}"

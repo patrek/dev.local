@@ -194,6 +194,12 @@ function Test-Values {
         $hasErrors = $true
     }
 
+    $exposePorts = Get-YamlValue -File $ProfilePath -Path ".expose_ports" -Default "false"
+    if ($exposePorts -ne "true" -and $exposePorts -ne "false") {
+        Write-Error-Message $basename "Champ 'expose_ports' doit être true ou false (trouvé: '$exposePorts')"
+        $hasErrors = $true
+    }
+
     # Validation des ports
     $content = Get-Content $ProfilePath -Raw
     if ($content -match "(?m)^[[:space:]]*ports:") {
@@ -267,8 +273,10 @@ function Test-CrossProfile {
         }
 
         # Vérifier les conflits de ports
+        # Sans expose_ports, les ports du profil ne sont pas publiés : aucun conflit possible
+        $exposePorts = Get-YamlValue -File $profile.FullName -Path ".expose_ports" -Default "false"
         $content = Get-Content $profile.FullName -Raw
-        if ($content -match "(?m)^[[:space:]]*ports:") {
+        if ($exposePorts -eq "true" -and $content -match "(?m)^[[:space:]]*ports:") {
             $portMatches = [regex]::Matches($content, '(?m)^[[:space:]]*-[[:space:]]*"?(\d+):')
             foreach ($match in $portMatches) {
                 $hostPort = $match.Groups[1].Value
