@@ -373,7 +373,7 @@ docker compose up -d --force-recreate
 
 ### Nettoyer tout
 ```bash
-docker compose down -v
+docker compose --profile "*" down -v --remove-orphans
 docker system prune -a
 ```
 

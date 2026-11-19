@@ -106,10 +106,10 @@ ecr-login:
 jfrog-login:
     {{launch}} jfrog-login
 
-[doc("Nettoyer containers et volumes")]
+[doc("Supprimer les containers et volumes de tous les profils")]
 [group("utilitaires")]
 clean:
-    docker compose down -v
+    docker compose --profile "*" down -v --remove-orphans
 
 [doc("Lancer le menu interactif")]
 [group("utilitaires")]

@@ -777,7 +777,7 @@ Modifier `traefik/traefik.yml` pour :
 | Logs tous | `just logs` | `.\launch.ps1 logs` | `./launch.sh logs` |
 | Logs service | `just logs api` | `.\launch.ps1 logs -service api` | `./launch.sh logs api` |
 | Commande ponctuelle | `just run gulp npx gulp build` | `.\launch.ps1 run gulp -- npx gulp build` | `./launch.sh run gulp npx gulp build` |
-| Nettoyer | `just clean` | `docker compose down -v` | `docker compose down -v` |
+| Nettoyer | `just clean` | `docker compose --profile "*" down -v --remove-orphans` | `docker compose --profile "*" down -v --remove-orphans` |
 
 #### 📋 Profils de services
 
