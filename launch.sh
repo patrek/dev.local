@@ -1,10 +1,23 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Script principal de gestion des services Dev.Local 2.0
 # Gère le cycle de vie des services Docker avec support SOPS pour les secrets
 
 # Note: set -e retiré car il empêche la gestion gracieuse des erreurs de SOPS
 
+# mapfile et les tableaux associatifs demandent bash 4+ (macOS fournit bash 3.2 : brew install bash)
+if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
+    echo "bash 4 ou plus récent est requis (version actuelle : ${BASH_VERSION:-inconnue})." >&2
+    echo "Sur macOS : brew install bash" >&2
+    exit 1
+fi
+
 cd "$(dirname "${BASH_SOURCE[0]}")" || exit 1
+
+show_usage() {
+    echo "Usage: $0 [start|stop|recreate|ps|logs [service]|sso|id|ecr-login|jfrog-login|edit-secrets|view-secrets]"
+    echo "       $0 --profile <profils> start"
+    echo "       $0 run <service> [commande...]"
+}
 
 COMMAND="start"
 PROFILES=""
@@ -40,12 +53,21 @@ while [[ $# -gt 0 ]]; do
             COMMAND="$1"
             shift
             ;;
+        -h|--help)
+            show_usage
+            exit 0
+            ;;
         *)
-            # Capture le service si fourni après la commande logs
+            # Seul le service de la commande logs est accepté ici : tout autre argument
+            # est une erreur, pour qu'une faute de frappe ne démarre pas les services
             if [[ "$COMMAND" == "logs" ]] && [[ -z "$SERVICE" ]]; then
                 SERVICE="$1"
+                shift
+            else
+                echo -e "\033[91mArgument inconnu: $1\033[0m" >&2
+                show_usage >&2
+                exit 1
             fi
-            shift
             ;;
     esac
 done
@@ -410,9 +432,7 @@ case "$COMMAND" in
         ;;
     *)
         echo -e "\033[91mCommande inconnue: $COMMAND\033[0m"
-        echo "Usage: $0 [start|stop|recreate|ps|sso|id|ecr-login|edit-secrets|view-secrets]"
-        echo "       $0 --profile <profils> start"
-        echo "       $0 run <service> [commande...]"
+        show_usage
         exit 1
         ;;
 esac

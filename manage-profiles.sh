@@ -1011,6 +1011,8 @@ case "$ACTION" in
         list_secret_vars
         ;;
     *)
-        show_profiles
+        echo -e "\033[91mAction inconnue: $ACTION\033[0m" >&2
+        echo "Usage: $0 [add|list|generate|init-secrets|sync-secrets|list-secrets]" >&2
+        exit 1
         ;;
 esac

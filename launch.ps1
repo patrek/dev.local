@@ -37,6 +37,7 @@ param(
     [string]$SelectedProfiles,
 
     [Parameter(Position = 0)]
+    [Alias("c")]
     [ValidateSet('up', 'start', 'stop', 'down', 'recreate', 'ps', 'logs', 'run', 'sso', 'id', 'ecr-login', 'jfrog-login', 'edit-secrets', 'view-secrets')]
     [string]$Command = 'start',
 
@@ -381,6 +382,19 @@ function Connect-JfrogLogin {
 }
 
 # Main
+
+# Un argument en trop est une erreur, pour qu'une faute de frappe ne démarre pas les services
+$extraArguments = @()
+if ($Command -notin @('run', 'logs') -and $ServiceItem) { $extraArguments += $ServiceItem }
+if ($Command -ne 'run' -and $runArgs) { $extraArguments += $runArgs }
+if ($extraArguments.Count -gt 0) {
+    Write-Host "Argument inconnu: $($extraArguments -join ' ')" -ForegroundColor Red
+    Write-Host "Usage: .\launch.ps1 [start|stop|recreate|ps|logs [service]|sso|id|ecr-login|jfrog-login|edit-secrets|view-secrets]"
+    Write-Host "       .\launch.ps1 -p <profils> start"
+    Write-Host "       .\launch.ps1 run <service> [commande...]"
+    exit 1
+}
+
 Validate-DockerCompose
 
 switch ($Command) {

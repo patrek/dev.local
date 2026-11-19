@@ -7,7 +7,7 @@
     Génère automatiquement docker-compose.yml et la configuration Traefik.
 
 .PARAMETER Action
-    Action à effectuer : add, list, remove, generate, init-secrets
+    Action à effectuer : add, list, generate, init-secrets, sync-secrets, list-secrets
 
 .EXAMPLE
     .\manage-profiles.ps1 -Action add
@@ -24,7 +24,7 @@
 
 param(
     [Parameter(Mandatory = $false)]
-    [ValidateSet('add', 'list', 'remove', 'enable', 'disable', 'generate', 'init-secrets', 'sync-secrets', 'list-secrets')]
+    [ValidateSet('add', 'list', 'generate', 'init-secrets', 'sync-secrets', 'list-secrets')]
     [string]$Action = 'list'
 )
 
