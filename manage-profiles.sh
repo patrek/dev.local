@@ -434,7 +434,7 @@ services:
   # (conteneurs, événements, infos) ; aucune requête d'écriture n'est acceptée.
   socket-proxy:
     image: tecnativa/docker-socket-proxy:v0.5.0
-    container_name: ${COMPOSE_PROJECT_NAME:-devlocal}_socket_proxy
+    container_name: ${NAMESPACE}_socket_proxy
     environment:
       - CONTAINERS=1  # liste, logs et stats des conteneurs (Traefik, Dozzle)
       - INFO=1        # requis par Dozzle pour se connecter
@@ -447,7 +447,7 @@ services:
   # Reverse Proxy Traefik
   traefik:
     image: traefik:v3.6.4
-    container_name: ${COMPOSE_PROJECT_NAME:-devlocal}_traefik
+    container_name: ${NAMESPACE}_traefik
     ports:
       - "127.0.0.1:8080:80"
       - "127.0.0.1:8081:8080"
@@ -475,7 +475,7 @@ EOF
   # Monitoring des logs
   dozzle:
     image: amir20/dozzle:latest
-    container_name: ${COMPOSE_PROJECT_NAME:-devlocal}_dozzle
+    container_name: ${NAMESPACE}_dozzle
     ports:
       - "127.0.0.1:$DOZZLE_PORT:8080"
     environment:

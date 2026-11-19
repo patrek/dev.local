@@ -76,8 +76,7 @@ test_generate() {
     dir=$(new_workdir generate)
 
     local output
-    # COMPOSE_PROJECT_NAME influence les noms de conteneurs générés
-    if ! output=$(env -u COMPOSE_PROJECT_NAME bash "$dir/manage-profiles.sh" generate 2>&1); then
+    if ! output=$(bash "$dir/manage-profiles.sh" generate 2>&1); then
         fail "manage-profiles.sh generate" "$output"
         return
     fi

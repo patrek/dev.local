@@ -8,7 +8,7 @@ services:
   # (conteneurs, événements, infos) ; aucune requête d'écriture n'est acceptée.
   socket-proxy:
     image: tecnativa/docker-socket-proxy:v0.5.0
-    container_name: devlocal_socket_proxy
+    container_name: testns_socket_proxy
     environment:
       - CONTAINERS=1  # liste, logs et stats des conteneurs (Traefik, Dozzle)
       - INFO=1        # requis par Dozzle pour se connecter
@@ -21,7 +21,7 @@ services:
   # Reverse Proxy Traefik
   traefik:
     image: traefik:v3.6.4
-    container_name: devlocal_traefik
+    container_name: testns_traefik
     ports:
       - "127.0.0.1:8080:80"
       - "127.0.0.1:8081:8080"
@@ -44,7 +44,7 @@ services:
   # Monitoring des logs
   dozzle:
     image: amir20/dozzle:latest
-    container_name: devlocal_dozzle
+    container_name: testns_dozzle
     ports:
       - "127.0.0.1:9999:8080"
     environment:
