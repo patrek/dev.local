@@ -779,14 +779,23 @@ http:
 }
 
 # Chiffre un contenu dotenv avec SOPS et retourne le texte chiffré ($null en cas d'échec).
-# Le contenu en clair passe par un fichier temporaire privé, hors du dépôt, toujours supprimé
-# (SOPS ne lit pas l'entrée standard de façon portable sous Windows).
 # -TargetFile fait appliquer à SOPS les règles .sops.yaml du fichier final.
+# Hors Windows, le contenu passe par l'entrée standard, comme dans manage-profiles.sh : rien
+# n'est écrit en clair sur disque. Sous Windows (pas de /dev/stdin), il passe par un fichier
+# temporaire privé, hors du dépôt, toujours supprimé.
 function Protect-SecretsContent {
     param(
         [string]$Content,
         [string]$TargetFile
     )
+
+    if ([System.Environment]::OSVersion.Platform -ne [System.PlatformID]::Win32NT) {
+        # PowerShell ajoute un saut de ligne au texte envoyé à une commande : retirer le dernier
+        $encrypted = ($Content -replace "`n$", '') |
+            & sops -e --filename-override $TargetFile --input-type dotenv --output-type dotenv /dev/stdin
+        if ($LASTEXITCODE -ne 0) { return $null }
+        return ($encrypted -join "`n")
+    }
 
     $tempFile = [System.IO.Path]::GetTempFileName()
     try {
@@ -875,13 +884,13 @@ function Sync-Secrets {
     if (-not (Get-Command sops -ErrorAction SilentlyContinue)) {
         Write-Error "SOPS n'est pas installé. Cette fonctionnalité nécessite SOPS."
         Write-Host "`n  💡 Installez SOPS : https://github.com/mozilla/sops/releases" -ForegroundColor Yellow
-        return
+        exit 1
     }
     
     # Vérifier la configuration SOPS
     if (-not (Test-Path ".sops.yaml")) {
         Write-Error "Fichier .sops.yaml introuvable. Configurez SOPS d'abord."
-        return
+        exit 1
     }
     
     $sopsConfig = Get-Content ".sops.yaml" -Raw
@@ -892,7 +901,7 @@ function Sync-Secrets {
         Write-Host "     - Age : age: 'age1...'" -ForegroundColor Gray
         Write-Host "`n  Pour générer une clé Age :" -ForegroundColor Yellow
         Write-Host "     age-keygen -o age-key.txt" -ForegroundColor Gray
-        return
+        exit 1
     }
     
     # Récupérer toutes les variables de secrets des profils
@@ -906,35 +915,39 @@ function Sync-Secrets {
     Write-Host "`n  Total: $($secretVars.Count) variable(s) trouvée(s)" -ForegroundColor Cyan
     
     # Lire le fichier secrets.env existant (déchiffré)
-    $existingSecrets = @{}
+    # Table sensible à la casse, comme le tableau associatif de manage-profiles.sh
+    $existingSecrets = [hashtable]::new()
     $secretsContent = ""
-    
+
     if (Test-Path $SecretsFile) {
+        # Ne pas continuer si le déchiffrement échoue, quelle qu'en soit la forme (code de
+        # sortie ou exception) : le fichier existant serait écrasé
+        $decryptedLines = $null
+        $decryptionSucceeded = $false
         try {
-            # Déchiffrer et lire
-            $decrypted = sops -d $SecretsFile
-            if ($LASTEXITCODE -eq 0) {
-                $secretsContent = $decrypted
-                foreach ($line in $decrypted -split "`n") {
-                    if ($line -match '^([A-Z_][A-Z0-9_]*)=(.*)$') {
-                        $existingSecrets[$matches[1]] = $matches[2]
-                    }
-                }
-                Write-Host "`n  ✅ Fichier secrets.env déchiffré ($($existingSecrets.Count) variables existantes)" -ForegroundColor Green
-            }
-            else {
-                # Ne pas continuer : le fichier existant serait écrasé
-                Write-Error "Impossible de déchiffrer $SecretsFile - aucune modification effectuée. Vérifiez votre clé SOPS, ou supprimez le fichier pour repartir de zéro."
-                return
-            }
+            $decryptedLines = & sops -d $SecretsFile
+            $decryptionSucceeded = ($LASTEXITCODE -eq 0)
         }
         catch {
-            Write-Warning "Erreur lors de la lecture de secrets.env: $_"
+            Write-Warning "Erreur lors du déchiffrement de ${SecretsFile} : $($_.Exception.Message)"
         }
+        if (-not $decryptionSucceeded) {
+            Write-Error "Impossible de déchiffrer $SecretsFile - aucune modification effectuée. Vérifiez votre clé SOPS, ou supprimez le fichier pour repartir de zéro."
+            exit 1
+        }
+
+        # Contenu conservé tel quel (lignes vides comprises), sans les sauts de ligne finaux
+        $secretsContent = (@($decryptedLines) -join "`n").TrimEnd("`n")
+        foreach ($line in $secretsContent -split "`n") {
+            if ($line -cmatch '^([A-Z_][A-Z0-9_]*)(=|$)') {
+                $existingSecrets[$matches[1]] = $true
+            }
+        }
+        Write-Host "`n  ✅ Fichier secrets.env déchiffré ($($existingSecrets.Count) variables existantes)" -ForegroundColor Green
     }
-    
+
     # Identifier les nouvelles variables à ajouter
-    $newVars = @{}
+    $newVars = [hashtable]::new()
     foreach ($var in $secretVars.Keys) {
         if (-not $existingSecrets.ContainsKey($var)) {
             $newVars[$var] = $secretVars[$var]
@@ -959,27 +972,25 @@ function Sync-Secrets {
         return
     }
     
-    # Construire le nouveau contenu
-    $lines = @()
+    # Construire le nouveau contenu : l'existant, une ligne vide, puis les nouvelles variables
+    $newContent = ""
     if ($secretsContent) {
-        $lines += $secretsContent -split "`n" | Where-Object { $_.Trim() -ne '' }
+        $newContent = "$secretsContent`n"
     }
-    
-    $lines += ""
-    $lines += "# Variables ajoutées automatiquement le $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
-    foreach ($var in $newVars.Keys | Sort-Object) {
-        $lines += "$var=$($newVars[$var])"
+    $newContent += "`n# Variables ajoutées automatiquement le $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')`n"
+    [string[]]$newNames = @($newVars.Keys)
+    [Array]::Sort($newNames, [StringComparer]::Ordinal)
+    foreach ($var in $newNames) {
+        $newContent += "$var=$($newVars[$var])`n"
     }
-    
-    $newContent = $lines -join "`n"
-    
+
     $encrypted = Protect-SecretsContent -Content $newContent -TargetFile $SecretsFile
     if ($null -eq $encrypted) {
         Write-Error "Erreur lors du chiffrement - $SecretsFile n'a pas été modifié"
-        return
+        exit 1
     }
 
-    $encrypted | Out-File -FilePath $SecretsFile -Encoding UTF8 -NoNewline
+    Write-GeneratedFile -Path $SecretsFile -Content $encrypted
     Write-Host "`n  ✅ secrets.env mis à jour et rechiffré ($($newVars.Count) variable(s) ajoutée(s))" -ForegroundColor Green
 }
 
