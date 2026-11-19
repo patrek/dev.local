@@ -17,26 +17,18 @@ CYAN='\033[96m'
 GRAY='\033[90m'
 RESET='\033[0m'
 
-# Détection de yq (même logique que manage-profiles.sh)
-YQ_CMD=""
-detect_yq_version() {
-    if ! command -v yq >/dev/null 2>&1; then
-        return 1
-    fi
+# yq local ou via Docker (voir lib/yq.sh)
+cd "$(dirname "${BASH_SOURCE[0]}")"
+source "lib/yq.sh"
 
-    if yq --help 2>&1 | grep -q "eval"; then
-        local version
-        version=$(yq --version 2>&1 | grep -oP 'version [v]?\K[0-9]+' | head -1)
-        if [ -n "$version" ] && [ "$version" -ge 4 ]; then
-            return 0
-        fi
-    fi
-    return 1
-}
-
-if detect_yq_version; then
-    YQ_CMD="yq"
-fi
+# Champs lus dans chaque profil, en un seul appel yq par fichier
+PROFILE_FIELDS=(
+    .name .enabled .always_active .docker_profile
+    .docker-compose.image .docker-compose.container_name
+    .traefik.enabled .traefik.prefix .traefik.docker_port
+    .traefik.local_port .traefik.priority
+)
+declare -A PROFILE_VALUES
 
 # Fonction pour afficher un message d'erreur
 error() {
@@ -60,28 +52,38 @@ success() {
     echo -e "${GREEN}✅${RESET} $profile"
 }
 
-# Fonction pour extraire une valeur YAML
+# Charge les champs d'un profil dans PROFILE_VALUES.
+# Échoue si le fichier n'est pas du YAML valide ou n'est pas exploitable.
+load_profile() {
+    local file="$1"
+    local expr
+    expr=$(IFS=,; echo "${PROFILE_FIELDS[*]}")
+
+    local output
+    output=$(yq e "$expr" "$file" 2>/dev/null) || return 1
+
+    local values
+    mapfile -t values <<< "$output"
+    # Une ligne par champ : un écart signale une valeur multi-ligne ou plusieurs documents
+    [ "${#values[@]}" -eq "${#PROFILE_FIELDS[@]}" ] || return 1
+
+    local i
+    for i in "${!PROFILE_FIELDS[@]}"; do
+        PROFILE_VALUES["$file|${PROFILE_FIELDS[$i]}"]="${values[$i]}"
+    done
+}
+
+# Retourne un champ chargé par load_profile, ou la valeur par défaut s'il est absent
 get_value() {
     local file="$1"
     local path="$2"
     local default="${3:-}"
+    local value="${PROFILE_VALUES["$file|$path"]}"
 
-    if [ -n "$YQ_CMD" ]; then
-        # Ne pas utiliser // car il traite false comme falsy
-        local value
-        value=$(yq e "$path" "$file" 2>/dev/null)
-
-        # Si la valeur est null ou vide, utiliser le défaut
-        if [ -z "$value" ] || [ "$value" = "null" ]; then
-            echo "$default"
-        else
-            echo "$value"
-        fi
+    if [ -z "$value" ] || [ "$value" = "null" ]; then
+        echo "$default"
     else
-        # Fallback grep/sed (basique)
-        local key
-        key=$(echo "$path" | sed 's/^\.//' | tr '.' ' ' | awk '{print $NF}')
-        grep -m1 "^[[:space:]]*${key}:" "$file" 2>/dev/null | sed "s/.*${key}: *//; s/ *#.*//" | tr -d '\r' || echo "$default"
+        echo "$value"
     fi
 }
 
@@ -89,17 +91,9 @@ get_value() {
 validate_yaml_syntax() {
     local profile="$1"
 
-    if [ -n "$YQ_CMD" ]; then
-        if ! yq e '.' "$profile" >/dev/null 2>&1; then
-            error "$(basename "$profile")" "Syntaxe YAML invalide"
-            return 1
-        fi
-    else
-        # Validation basique sans yq
-        if ! grep -q "^[a-z]" "$profile" 2>/dev/null; then
-            error "$(basename "$profile")" "Fichier vide ou invalide"
-            return 1
-        fi
+    if ! load_profile "$profile"; then
+        error "$(basename "$profile")" "Syntaxe YAML invalide (ou valeur multi-ligne / documents multiples non supportés)"
+        return 1
     fi
     return 0
 }
@@ -231,6 +225,9 @@ validate_cross_profile() {
     for profile in $PROFILES_DIR/*.yml; do
         [ -f "$profile" ] || continue
 
+        # Ignorer les profils non chargés : déjà signalés par la validation individuelle
+        [ -n "${PROFILE_VALUES["$profile|.name"]+x}" ] || continue
+
         local enabled
         enabled=$(get_value "$profile" ".enabled" "true")
         [ "$enabled" != "true" ] && continue
@@ -288,10 +285,10 @@ main() {
     echo -e "${CYAN}╚══════════════════════════════════════════════════════╝${RESET}"
     echo ""
 
-    if [ -n "$YQ_CMD" ]; then
-        echo -e "${GREEN}✓${RESET} yq détecté - validation complète activée"
+    if [ "$YQ_MODE" = "docker" ]; then
+        echo -e "${GREEN}✓${RESET} yq via Docker ($YQ_IMAGE)"
     else
-        echo -e "${YELLOW}⚠${RESET} yq non disponible - validation basique seulement"
+        echo -e "${GREEN}✓${RESET} yq local"
     fi
     echo ""
 
