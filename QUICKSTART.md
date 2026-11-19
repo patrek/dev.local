@@ -120,7 +120,7 @@ Si vous avez répondu « n » à « Service toujours actif », le service est ra
 
 - Votre service : http://localhost:8080/api
 - Traefik Dashboard : http://localhost:8081/
-- Dozzle (logs) : http://localhost:9999/ ou http://localhost:8080/logs
+- Dozzle (logs) : http://localhost:9999/logs ou http://localhost:8080/logs
 
 Un problème ? Voir [Dépannage](README.md#-dépannage).
 
@@ -137,7 +137,7 @@ Un problème ? Voir [Dépannage](README.md#-dépannage).
 - [ ] Validation réussie : `docker compose config --quiet`
 - [ ] Services démarrés avec succès
 - [ ] Traefik accessible sur http://localhost:8081/
-- [ ] Dozzle accessible sur http://localhost:9999/ (si activé)
+- [ ] Dozzle accessible sur http://localhost:9999/logs (si activé)
 
 ## 📚 Prochaines étapes
 

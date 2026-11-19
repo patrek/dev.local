@@ -99,7 +99,7 @@
 |---------|-----|
 | Vos services (via Traefik) | `http://localhost:8080/<prefix>` |
 | Traefik Dashboard | `http://localhost:8081/` |
-| Dozzle (logs) | `http://localhost:9999/` ou `http://localhost:8080/logs` |
+| Dozzle (logs) | `http://localhost:9999/logs` ou `http://localhost:8080/logs` |
 
 ## 🎯 Workflows Courants
 

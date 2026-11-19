@@ -155,7 +155,7 @@ just validate                            # docker compose config --quiet
 Après le démarrage, vérifiez que tout fonctionne :
 
 - **Traefik Dashboard :** http://localhost:8081/
-- **Dozzle (logs) :** http://localhost:9999/ ou http://localhost:8080/logs
+- **Dozzle (logs) :** http://localhost:9999/logs ou http://localhost:8080/logs
 - **Vos services :** http://localhost:8080/[prefix-du-service]
 
 Ces ports ne sont ouverts que sur `127.0.0.1` : ils ne sont pas joignables depuis une autre machine du réseau.
@@ -646,7 +646,7 @@ Le fichier `config.yml` regroupe la configuration commune à tous les services. 
 ```yaml
 # Dozzle - Monitoring des logs Docker
 dozzle_enabled: true   # false pour désactiver Dozzle
-dozzle_port: 9999      # Accessible via http://localhost:9999 ou http://localhost:8080/logs
+dozzle_port: 9999      # Accessible via http://localhost:9999/logs ou http://localhost:8080/logs
 ```
 
 ### Personnalisation Traefik
@@ -709,7 +709,7 @@ just start-profile api-backend,frontend
 # Frontend : http://localhost:8080/
 # API : http://localhost:8080/api
 # Traefik Dashboard : http://localhost:8081/
-# Dozzle (logs) : http://localhost:9999/
+# Dozzle (logs) : http://localhost:9999/logs
 ```
 
 ### Exemple 2 : Microservices avec services externes
