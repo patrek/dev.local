@@ -110,7 +110,8 @@ load_config() {
 
 # Fonction pour charger les variables d'environnement partagées
 # Nécessite load_config. Retourne une variable par ligne : les groupes auto_inject,
-# puis les groupes service_specific du service. Rien si le service est exclu.
+# puis les groupes service_specific du service, chaque groupe une seule fois.
+# Rien si le service est exclu.
 get_shared_env_vars() {
     local service_name="$1"
 
@@ -123,7 +124,7 @@ get_shared_env_vars() {
     done
 
     yq e ".shared_env as \$env
-        | ((.shared_env_config.auto_inject // []) + (.shared_env_config.service_specific[\"$service_name\"] // []))
+        | (((.shared_env_config.auto_inject // []) + (.shared_env_config.service_specific[\"$service_name\"] // [])) | unique)
         | .[] as \$group
         | \$env[\$group]
         | .[]" "$CONFIG_FILE" 2>/dev/null || true
