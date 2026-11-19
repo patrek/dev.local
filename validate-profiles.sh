@@ -217,7 +217,8 @@ validate_values() {
     if grep -q "^[[:space:]]*ports:" "$profile"; then
         local port_line
         port_line=$(grep -A1 "^[[:space:]]*ports:" "$profile" | tail -1)
-        if echo "$port_line" | grep -q '"non"'; then
+        # "non" quelle que soit l'écriture ("non", 'non' ou non), comme validate-profiles.ps1
+        if echo "$port_line" | grep -qE "\"non\"|'non'|^[[:space:]]*-[[:space:]]+non[[:space:]]*(#.*)?\$"; then
             error "$basename" "Valeur de port invalide: 'non' (devrait être 'none' ou un port valide)"
             has_errors=1
         fi
@@ -269,6 +270,8 @@ validate_cross_profile() {
     declare -A container_names
     declare -A host_ports
     local has_errors=0
+    # Élément de liste "port_hôte:..." entre guillemets doubles, simples ou sans guillemets
+    local host_port_pattern="^[[:space:]]*-[[:space:]]*[\"']?([0-9]+):"
 
     for profile in $PROFILES_DIR/*.yml; do
         [ -f "$profile" ] || continue
@@ -299,7 +302,7 @@ validate_cross_profile() {
         # Sans expose_ports, les ports du profil ne sont pas publiés : aucun conflit possible
         if [ "$(get_value "$profile" ".expose_ports" "false")" = "true" ] && grep -q "^[[:space:]]*ports:" "$profile"; then
             while IFS= read -r port_line; do
-                if [[ "$port_line" =~ ^[[:space:]]*-[[:space:]]*\"?([0-9]+): ]]; then
+                if [[ "$port_line" =~ $host_port_pattern ]]; then
                     local host_port="${BASH_REMATCH[1]}"
                     if [ -n "${host_ports[$host_port]}" ]; then
                         warning "$basename" "Port hôte $host_port déjà utilisé par ${host_ports[$host_port]}"
