@@ -1,0 +1,9 @@
+# expect: Clé YAML en double
+name: duplicate-key
+name: duplicate-key-bis
+enabled: true
+always_active: true
+
+docker-compose:
+  image: nginx:alpine
+  container_name: duplicate-key

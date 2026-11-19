@@ -1,56 +1,110 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Script principal de gestion des services Dev.Local 2.0
 # Gère le cycle de vie des services Docker avec support SOPS pour les secrets
 
 # Note: set -e retiré car il empêche la gestion gracieuse des erreurs de SOPS
 
+# mapfile et les tableaux associatifs demandent bash 4+ (macOS fournit bash 3.2 : brew install bash)
+if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
+    echo "bash 4 ou plus récent est requis (version actuelle : ${BASH_VERSION:-inconnue})." >&2
+    echo "Sur macOS : brew install bash" >&2
+    exit 1
+fi
+
 cd "$(dirname "${BASH_SOURCE[0]}")" || exit 1
+
+show_usage() {
+    echo "Usage: $0 [start|stop|recreate|ps|logs [service]|sso|id|ecr-login|jfrog-login|edit-secrets|view-secrets]"
+    echo "       $0 --profile <profils> start"
+    echo "       $0 run <service> [commande...]"
+}
+
+# Une option sans valeur est une erreur : sans ce contrôle, "shift 2" échoue sans rien
+# décaler et la boucle d'analyse des arguments ne se termine jamais
+require_value() {
+    if [ $# -lt 2 ]; then
+        echo -e "\033[91mValeur manquante pour l'option $1\033[0m" >&2
+        show_usage >&2
+        exit 1
+    fi
+}
 
 COMMAND="start"
 PROFILES=""
 SERVICE=""
+RUN_ARGS=()
+
+# Permet aux profils d'exécuter les conteneurs avec l'utilisateur courant
+# (user: "${HOST_UID:-1000}:${HOST_GID:-1000}") pour ne pas créer de fichiers root
+export HOST_UID="${HOST_UID:-$(id -u)}"
+export HOST_GID="${HOST_GID:-$(id -g)}"
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
         -p|--profile)
+            require_value "$@"
             PROFILES="$2"
             shift 2
             ;;
         -s|--service)
+            require_value "$@"
             SERVICE="$2"
             shift 2
+            ;;
+        run)
+            # run <service> [commande...] : tout ce qui suit est passé tel quel au conteneur
+            COMMAND="run"
+            shift
+            SERVICE="${1:-}"
+            [ $# -gt 0 ] && shift
+            RUN_ARGS=("$@")
+            break
             ;;
         up|start|stop|down|recreate|ps|logs|sso|id|ecr-login|jfrog-login|edit-secrets|view-secrets)
             COMMAND="$1"
             shift
             ;;
+        -h|--help)
+            show_usage
+            exit 0
+            ;;
         *)
-            # Capture le service si fourni après la commande logs
+            # Seul le service de la commande logs est accepté ici : tout autre argument
+            # est une erreur, pour qu'une faute de frappe ne démarre pas les services
             if [[ "$COMMAND" == "logs" ]] && [[ -z "$SERVICE" ]]; then
                 SERVICE="$1"
+                shift
+            else
+                echo -e "\033[91mArgument inconnu: $1\033[0m" >&2
+                show_usage >&2
+                exit 1
             fi
-            shift
             ;;
     esac
 done
 
-# Lire l'URL d'un registre dans config.yml (ex: get_registry_url ecr <défaut>)
+# Lire une valeur de config.yml (ex: get_config_value .aws.region <défaut>)
 # yq est chargé dans un sous-shell : s'il est indisponible, on garde la valeur par défaut
-get_registry_url() {
-    local registry="$1"
+get_config_value() {
+    local path="$1"
     local default="$2"
-    local url=""
+    local value=""
 
     if [ -f "config.yml" ]; then
-        url=$(source "lib/yq.sh" && yq e ".registries.${registry}.url" "config.yml" 2>/dev/null)
+        value=$(source "lib/yq.sh" && yq e "$path" "config.yml" 2>/dev/null)
     fi
 
-    if [ -z "$url" ] || [ "$url" = "null" ]; then
+    if [ -z "$value" ] || [ "$value" = "null" ]; then
         echo "$default"
     else
-        echo "$url"
+        echo "$value"
     fi
+}
+
+# Profil AWS : AWS_PROFILE s'il est défini, sinon aws.profile de config.yml
+get_aws_profile() {
+    echo "${AWS_PROFILE:-$(get_config_value .aws.profile "ESG-DV-PowerUser-SSO")}"
 }
 
 # Valider Docker Compose
@@ -205,14 +259,34 @@ view_secrets() {
     sops -d secrets.env | less -S
 }
 
-# Démarrer les services
-start_services() {
-    # Vérifier que docker-compose.yml existe
+# Générer docker-compose.yml s'il n'existe pas encore
+ensure_compose_file() {
     if [ ! -f "docker-compose.yml" ]; then
         echo -e "\033[93mdocker-compose.yml non trouvé. Génération...\033[0m"
         ./manage-profiles.sh generate
     fi
-    
+}
+
+# Exécuter une commande ponctuelle dans un service (ex: run gulp npx gulp build)
+# Les messages vont sur stderr pour que stdout ne contienne que la sortie de la commande
+run_command() {
+    if [ -z "$SERVICE" ]; then
+        echo -e "\033[91mService requis\033[0m" >&2
+        echo "Usage: $0 run <service> [commande...]" >&2
+        return 1
+    fi
+
+    ensure_compose_file >&2
+    load_secrets >&2
+
+    # --profile "*" : le service est utilisable même si son profil Docker n'est pas démarré
+    docker compose --profile "*" run --rm "$SERVICE" "${RUN_ARGS[@]}"
+}
+
+# Démarrer les services
+start_services() {
+    ensure_compose_file
+
     load_secrets
     
     if [ -n "$PROFILES" ]; then
@@ -220,13 +294,13 @@ start_services() {
         echo -e "\033[96m🚀 Démarrage des profils: $PROFILES\033[0m"
         
         # Construire la commande avec --profile pour chaque profil
-        local profile_args=""
+        local profile_args=()
         IFS=',' read -ra PROFILE_ARRAY <<< "$PROFILES"
         for profile in "${PROFILE_ARRAY[@]}"; do
-            profile_args="$profile_args --profile $profile"
+            profile_args+=(--profile "$profile")
         done
-        
-        docker compose $profile_args up -d
+
+        docker compose "${profile_args[@]}" up -d
     else
         unset COMPOSE_PROFILES
         echo -e "\033[96m🚀 Démarrage de tous les services\033[0m"
@@ -278,7 +352,7 @@ connect_aws_sso() {
     fi
     
     echo -e "\033[96m🔐 Connexion AWS SSO...\033[0m"
-    aws sso login --profile ESG-DV-PowerUser-SSO
+    aws sso login --profile "$(get_aws_profile)"
 }
 
 # AWS Identity
@@ -289,7 +363,7 @@ show_aws_identity() {
     fi
     
     echo -e "\033[96m🪪 Identité AWS:\033[0m"
-    aws sts get-caller-identity
+    aws sts get-caller-identity --profile "$(get_aws_profile)"
 }
 
 # Docker ECR Login
@@ -301,38 +375,26 @@ connect_ecr_login() {
 
     # Lire l'URL ECR depuis config.yml
     local ecr_url
-    ecr_url=$(get_registry_url ecr "<id>.dkr.ecr.ca-central-1.amazonaws.com")
+    ecr_url=$(get_config_value .registries.ecr.url "<id>.dkr.ecr.ca-central-1.amazonaws.com")
 
     echo -e "\033[96m🐳 Connexion Docker à AWS ECR...\033[0m"
 
-    # Méthode sécurisée: utiliser un fichier temporaire avec permissions restreintes
-    local temp_pass
-    temp_pass=$(mktemp -t ecr-pass.XXXXXX)
-    chmod 600 "$temp_pass"
+    # Le mot de passe passe directement d'un processus à l'autre, sans fichier temporaire
+    aws ecr get-login-password --profile "$(get_aws_profile)" --region "$(get_config_value .aws.region "ca-central-1")" | docker login --username AWS --password-stdin "$ecr_url"
+    local statuses=("${PIPESTATUS[@]}")
 
-    # Nettoyer le fichier temporaire à la fin
-    trap "rm -f '$temp_pass'" EXIT
-
-    if aws ecr get-login-password --region ca-central-1 > "$temp_pass" 2>/dev/null; then
-        docker login --username AWS --password-stdin "$ecr_url" < "$temp_pass"
-        local result=$?
-        # Écraser le contenu avant suppression
-        shred -u "$temp_pass" 2>/dev/null || rm -f "$temp_pass"
-        trap - EXIT
-        return $result
-    else
-        rm -f "$temp_pass"
-        trap - EXIT
+    if [ "${statuses[0]}" -ne 0 ]; then
         echo -e "\033[91mÉchec de récupération du mot de passe ECR\033[0m"
         return 1
     fi
+    return "${statuses[1]}"
 }
 
 # Docker JFrog Login
 connect_jfrog_login() {
     # Lire l'URL JFrog depuis config.yml
     local jfrog_url
-    jfrog_url=$(get_registry_url jfrog "custom.jfrog.io")
+    jfrog_url=$(get_config_value .registries.jfrog.url "custom.jfrog.io")
     
     echo -e "\033[96m🐳 Connexion Docker à JFrog...\033[0m"
     echo -e "\033[93mUtilisez: docker login $jfrog_url\033[0m"
@@ -359,6 +421,9 @@ case "$COMMAND" in
     logs)
         show_logs
         ;;
+    run)
+        run_command
+        ;;
     sso)
         connect_aws_sso
         ;;
@@ -379,8 +444,7 @@ case "$COMMAND" in
         ;;
     *)
         echo -e "\033[91mCommande inconnue: $COMMAND\033[0m"
-        echo "Usage: $0 [start|stop|recreate|ps|sso|id|ecr-login|edit-secrets|view-secrets]"
-        echo "       $0 --profile <profils> start"
+        show_usage
         exit 1
         ;;
 esac

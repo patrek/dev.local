@@ -1,5 +1,7 @@
 # Guide .gitattributes - Dev.Local
 
+> **Rôle de ce document :** expliquer les règles de fins de ligne du fichier `.gitattributes`. Le bit exécutable des scripts `.sh` (que `.gitattributes` ne gère pas) est traité dans le [README](../README.md#-développeurs-windows--permissions-des-fichiers-sh).
+
 ## 📋 Vue d'ensemble
 
 Le fichier `.gitattributes` garantit que tous les développeurs, quel que soit leur système d'exploitation, travaillent avec les bonnes fins de ligne pour chaque type de fichier.

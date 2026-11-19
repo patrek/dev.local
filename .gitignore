@@ -8,9 +8,9 @@ secrets.env.dec
 age-key.txt
 *.agekey
 
-# Fichiers générés
-docker-compose.yml
-traefik/dynamic.yml
+# Fichiers générés (à la racine uniquement : tests/expected contient les versions de référence)
+/docker-compose.yml
+/traefik/dynamic.yml
 
 # IDE
 .idea/

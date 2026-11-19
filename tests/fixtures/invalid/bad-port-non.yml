@@ -1,0 +1,11 @@
+# expect: Port invalide dans docker-compose.ports: 'non'
+name: bad-port-non
+enabled: true
+always_active: true
+docker_profile: null
+
+docker-compose:
+  image: nginx:alpine
+  container_name: bad-port-non
+  ports:
+    - non

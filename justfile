@@ -12,7 +12,7 @@ manage := if os() == "windows" { ".\\manage-profiles.ps1" } else { "./manage-pro
 
 # Services Docker
 
-[doc("Démarrer tous les services")]
+[doc("Démarrer les services de base (Traefik, Dozzle, profils always_active)")]
 [group("docker")]
 start:
     {{launch}} start
@@ -20,7 +20,7 @@ start:
 [doc("Démarrer avec profils spécifiques")]
 [group("docker")]
 start-profile profiles:
-    {{launch}} -p {{profiles}} start
+    {{launch}} -p {{quote(profiles)}} start
 
 [doc("Arrêter tous les services")]
 [group("docker")]
@@ -40,7 +40,25 @@ ps:
 [doc("Voir les logs d'un service")]
 [group("docker")]
 logs service="":
-    {{launch}} logs {{service}}
+    {{launch}} logs {{ if service == "" { "" } else { quote(service) } }}
+
+[unix]
+[doc("Exécuter une commande ponctuelle dans un service (ex: just run gulp npx gulp build)")]
+[group("docker")]
+[positional-arguments]
+run service *args:
+    ./launch.sh run "$@"
+
+# Recette en script : chaque argument arrive tel quel dans $args. Les paramètres nommés
+# empêchent PowerShell d'interpréter un argument comme "-p" ou "-c" destiné au conteneur.
+[windows]
+[doc("Exécuter une commande ponctuelle dans un service (ex: just run gulp npx gulp build)")]
+[group("docker")]
+[positional-arguments]
+run service *args:
+    #!pwsh.exe
+    .\launch.ps1 -Command run -ServiceItem $args[0] -runArgs @($args | Select-Object -Skip 1)
+    exit $LASTEXITCODE
 
 # Profils
 
@@ -93,10 +111,10 @@ ecr-login:
 jfrog-login:
     {{launch}} jfrog-login
 
-[doc("Nettoyer containers et volumes")]
+[doc("Supprimer les containers et volumes de tous les profils")]
 [group("utilitaires")]
 clean:
-    docker compose down -v
+    docker compose --profile "*" down -v --remove-orphans
 
 [doc("Lancer le menu interactif")]
 [group("utilitaires")]
@@ -107,6 +125,20 @@ menu:
 [group("utilitaires")]
 config:
     docker compose config
+
+# Développement
+
+[unix]
+[doc("Exécuter les tests des scripts Bash")]
+[group("dev")]
+test:
+    tests/run-tests.sh
+
+[unix]
+[doc("Analyser les scripts Bash avec ShellCheck (via Docker)")]
+[group("dev")]
+lint:
+    docker run --rm -v "$PWD":/mnt:ro -w /mnt koalaman/shellcheck:v0.11.0 -x -S warning launch.sh manage-profiles.sh validate-profiles.sh menu.sh lib/yq.sh tests/run-tests.sh tests/compare-shells.sh
 
 # Fonction interne pour déléguer aux scripts
 

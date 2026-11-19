@@ -1,0 +1,10 @@
+# expect: Champ 'expose_ports' doit être true ou false
+name: bad-expose-ports
+enabled: true
+always_active: true
+docker_profile: null
+expose_ports: maybe
+
+docker-compose:
+  image: nginx:alpine
+  container_name: bad-expose-ports

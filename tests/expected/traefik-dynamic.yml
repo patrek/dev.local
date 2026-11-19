@@ -1,0 +1,79 @@
+# Généré automatiquement par manage-profiles.sh
+# NE PAS ÉDITER MANUELLEMENT - Vos modifications seront écrasées
+http:
+  routers:
+    api:
+      rule: "PathPrefix(`/api`)"
+      service: api
+      priority: 20
+      middlewares:
+        - api-strip
+    web:
+      rule: "PathPrefix(`/`)"
+      service: web
+      priority: 10
+    dozzle-logs:
+      rule: "PathPrefix(`/logs`)"
+      service: dozzle
+      priority: 10
+
+  middlewares:
+    api-strip:
+      stripPrefix:
+        prefixes:
+          - "/api"
+
+  services:
+    api:
+      failover:
+        service: api-host
+        fallback: api-docker
+    api-host:
+      loadBalancer:
+        healthCheck:
+          path: /health
+          interval: 5s
+          timeout: 1s
+        servers:
+          - url: "http://external-ip:8001"
+        passHostHeader: true
+    api-docker:
+      loadBalancer:
+        healthCheck:
+          path: /health
+          interval: 5s
+          timeout: 1s
+        servers:
+          - url: "http://api:80"
+        passHostHeader: true
+    web:
+      failover:
+        service: web-host
+        fallback: web-docker
+    web-host:
+      loadBalancer:
+        healthCheck:
+          path: /health
+          interval: 5s
+          timeout: 1s
+        servers:
+          - url: "http://external-ip:3000"
+        passHostHeader: true
+    web-docker:
+      loadBalancer:
+        healthCheck:
+          path: /health
+          interval: 5s
+          timeout: 1s
+        servers:
+          - url: "http://web:3000"
+        passHostHeader: true
+    dozzle:
+      loadBalancer:
+        healthCheck:
+          path: /logs
+          interval: 5s
+          timeout: 2s
+        servers:
+          - url: "http://dozzle:8080"
+        passHostHeader: true

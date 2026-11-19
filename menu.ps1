@@ -9,23 +9,128 @@
     .\menu.ps1
 #>
 
-# Check for powershell-yaml module
+# Le module powershell-yaml n'est installé que s'il est absent
 if (-not (Get-Module -ListAvailable powershell-yaml)) {
     Write-Warning "Le module 'powershell-yaml' est requis. Installation..."
-    Install-Module powershell-yaml -Scope CurrentUser -Force -AllowClobber
+    try {
+        Install-Module powershell-yaml -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
+    }
+    catch {
+        Write-Host "❌ Impossible d'installer le module 'powershell-yaml' : $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "Installez-le manuellement : Install-Module powershell-yaml -Scope CurrentUser" -ForegroundColor Yellow
+        exit 1
+    }
 }
-Import-Module powershell-yaml
-
-$PSDefaultParameterValues['*:Encoding'] = 'UTF8'
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+try {
+    Import-Module powershell-yaml -ErrorAction Stop
+}
+catch {
+    Write-Host "❌ Impossible de charger le module 'powershell-yaml' : $($_.Exception.Message)" -ForegroundColor Red
+    exit 1
+}
 
 function Wait-AnyKey {
     Write-Host "`n[Appuyez sur n'importe quelle touche pour continuer...]" -ForegroundColor DarkGray
+    if ([Console]::IsInputRedirected) {
+        # ReadKey échoue quand l'entrée n'est pas une console
+        $null = [Console]::In.Read()
+        return
+    }
     $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
 }
 
 # Variable globale pour stocker les derniers profils utilisés
 $script:LastProfiles = $null
+
+# Valeur d'un champ YAML sous forme de texte, telle que yq la donne à menu.sh
+# ("null" si le champ est absent). Les booléens sont ensuite comparés comme du texte :
+# un "false" entre guillemets est une chaîne non vide, donc vraie pour PowerShell.
+function ConvertTo-YamlText {
+    param($Value)
+
+    if ($null -eq $Value) { return 'null' }
+    if ($Value -is [bool]) { return $Value.ToString().ToLower() }
+    return [string]$Value
+}
+
+# Lit les champs d'un profil utilisés par le menu, avec les règles de menu.sh :
+#   - enabled       : activé sauf si la valeur est "false"
+#   - always_active : toujours actif seulement si la valeur est "true" ; absent, le
+#                     service est placé derrière son profil Docker Compose par le générateur
+# Lève une exception si le fichier n'est pas du YAML valide.
+function Read-ProfileEntry {
+    param($File)
+
+    $data = Get-Content -LiteralPath $File.FullName -Raw | ConvertFrom-Yaml
+
+    $name = ConvertTo-YamlText $data.name
+    if ($name -eq 'null' -or $name -eq '') { $name = $File.BaseName }
+
+    $dockerProfile = ConvertTo-YamlText $data.docker_profile
+    if ($dockerProfile -eq 'null' -or $dockerProfile -eq '') { $dockerProfile = $null }
+
+    return @{
+        Name          = $name
+        DockerProfile = $dockerProfile
+        Enabled       = (ConvertTo-YamlText $data.enabled) -cne 'false'
+        AlwaysActive  = (ConvertTo-YamlText $data.always_active) -ceq 'true'
+    }
+}
+
+# Exécute un script du projet dans le processus du menu. La commande affichée est
+# construite à partir de ce qui est réellement lancé. Un échec (exit non nul ou
+# exception) est signalé sans quitter le menu.
+function Invoke-MenuScript {
+    param(
+        [string]$Name,
+        [System.Collections.IDictionary]$Parameters = @{}
+    )
+
+    $commandLine = ".\$Name"
+    foreach ($key in $Parameters.Keys) {
+        $commandLine += " -$key $($Parameters[$key])"
+    }
+    Write-Host "Commande: " -NoNewline -ForegroundColor DarkGray
+    Write-Host $commandLine -ForegroundColor Yellow
+
+    try {
+        & (Join-Path '.' $Name) @Parameters
+        $succeeded = $?
+        $failure = "code de sortie : $LASTEXITCODE"
+    }
+    catch {
+        $succeeded = $false
+        $failure = $_.Exception.Message
+    }
+
+    if (-not $succeeded) {
+        Write-Host "`n⚠️  La commande a échoué ($failure)" -ForegroundColor Red
+    }
+}
+
+# Ouvre README.md : VS Code si disponible, sinon le Bloc-notes sous Windows,
+# ou nano puis less ailleurs (comme menu.sh)
+function Open-Readme {
+    # $IsWindows n'existe pas dans Windows PowerShell 5.1, qui ne tourne que sous Windows
+    $onWindows = ($PSVersionTable.PSVersion.Major -lt 6) -or $IsWindows
+
+    if (Get-Command code -ErrorAction SilentlyContinue) {
+        & code README.md
+    }
+    elseif ($onWindows) {
+        & notepad README.md
+    }
+    elseif (Get-Command nano -ErrorAction SilentlyContinue) {
+        & nano README.md
+    }
+    elseif (Get-Command less -ErrorAction SilentlyContinue) {
+        & less README.md
+    }
+    else {
+        Write-Warning "Aucun programme trouvé pour ouvrir README.md (code, nano, less)"
+        Wait-AnyKey
+    }
+}
 
 function Show-Menu {
     Clear-Host
@@ -87,24 +192,23 @@ function Show-Profiles {
 "@
     
     $profiles = Get-ChildItem -Path "profiles" -Filter "*.yml" -ErrorAction SilentlyContinue
-    
+
     if ($profiles.Count -eq 0) {
         Write-Host "  Aucun profil disponible" -ForegroundColor Yellow
         Write-Host "  Utilisez l'option 6 pour créer un profil`n"
         return
     }
-    
+
     $profileMap = @{}
     $i = 1
-    
+
     foreach ($profileFile in $profiles) {
         try {
-            $data = Get-Content $profileFile.FullName -Raw | ConvertFrom-Yaml
-            $name = if ($data.name) { $data.name } else { $profileFile.BaseName }
-            $dockerProfile = if ($data.docker_profile) { $data.docker_profile } else { $name }
-            $enabled = if ($null -ne $data.enabled) { $data.enabled } else { $true }
-            
-            if ($enabled) {
+            $entry = Read-ProfileEntry $profileFile
+            $name = $entry.Name
+            $dockerProfile = if ($entry.DockerProfile) { $entry.DockerProfile } else { $name }
+
+            if ($entry.Enabled) {
                 Write-Host "  [$i] ✅ $name" -ForegroundColor Cyan
                 $profileMap[$i] = $dockerProfile
                 $i++
@@ -117,97 +221,91 @@ function Show-Profiles {
             Write-Host "  ⚠️ Erreur lecture $($profileFile.Name)" -ForegroundColor Red
         }
     }
-    
+
     Write-Host "`nExemples:"
     Write-Host "  1,2         (par numéros)"
     Write-Host "  api,web     (par noms)`n"
-    
+
     $userInput = Read-Host "Entrez les profils (noms ou numéros, séparés par virgules)"
-    
-    if ($userInput) {
-        $selectedProfiles = @()
-        $parts = $userInput -split ","
-        
-        foreach ($part in $parts) {
-            $val = $part.Trim()
-            if ($val -match '^\d+$') {
-                $idx = [int]$val
-                if ($profileMap.ContainsKey($idx)) {
-                    $selectedProfiles += $profileMap[$idx]
-                }
-            }
-            else {
-                $selectedProfiles += $val
+
+    $selectedProfiles = @()
+    foreach ($part in ("$userInput" -split ",")) {
+        $val = $part -replace '\s', ''
+        if ($val -eq '') { continue }
+        if ($val -match '^\d+$') {
+            $idx = [int]$val
+            if ($profileMap.ContainsKey($idx)) {
+                $selectedProfiles += $profileMap[$idx]
             }
         }
-        
-        $finalProfiles = $selectedProfiles -join ","
-        $script:LastProfiles = $finalProfiles
-        Write-Host "▶️ Démarrage avec profils: $finalProfiles" -ForegroundColor Cyan
-        Write-Host "Commande: " -NoNewline -ForegroundColor DarkGray
-        Write-Host ".\launch.ps1 -p $finalProfiles" -ForegroundColor Yellow
-        & .\launch.ps1 -p $finalProfiles
+        else {
+            $selectedProfiles += $val
+        }
     }
+
+    # Sans profil valide, rien n'est lancé : "launch.ps1 -p ''" démarrerait les services de base
+    $finalProfiles = $selectedProfiles -join ","
+    if (-not $finalProfiles) {
+        Write-Host "Aucun profil valide sélectionné - rien n'a été démarré" -ForegroundColor Yellow
+        return
+    }
+
+    $script:LastProfiles = $finalProfiles
+    Write-Host "▶️ Démarrage avec profils: $finalProfiles" -ForegroundColor Cyan
+    Invoke-MenuScript 'launch.ps1' ([ordered]@{ p = $finalProfiles })
 }
 
 function Main {
     do {
         Show-Menu
         $choice = Read-Host "Choisissez une option (0-17) ou 'q' pour quitter"
-        
-        switch ($choice) {
+
+        # Fin de l'entrée (pas de console, Ctrl+D) : quitter au lieu de boucler
+        if ($null -eq $choice) {
+            Write-Host ""
+            exit 0
+        }
+
+        switch ($choice.Trim()) {
             "1" {
                 Write-Host "▶️  Démarrage de tous les services..." -ForegroundColor Cyan
-                
-                # Récupérer tous les profils actifs nécessaires
+
+                # Profils Docker Compose des services activés qui ne sont pas toujours actifs
                 $activeProfiles = @()
                 $profileFiles = Get-ChildItem -Path "profiles" -Filter "*.yml" -ErrorAction SilentlyContinue
-                
+
                 foreach ($file in $profileFiles) {
                     try {
-                        $data = Get-Content $file.FullName -Raw | ConvertFrom-Yaml
-                        
-                        $enabled = if ($null -ne $data.enabled) { $data.enabled } else { $true }
-                        if (-not $enabled) { continue }
-                        
-                        $alwaysActive = if ($null -ne $data.always_active) { $data.always_active } else { $true }
-                        
-                        if (-not $alwaysActive) {
-                            $prof = $data.docker_profile
-                            if ($prof -and $prof -ne "null") {
-                                $activeProfiles += $prof
-                            }
-                        }
+                        $entry = Read-ProfileEntry $file
                     }
                     catch {
                         # Ignorer les erreurs de parsing pour ne pas bloquer
                         Write-Warning "Erreur lecture $($file.Name)"
+                        continue
+                    }
+
+                    if ($entry.Enabled -and -not $entry.AlwaysActive -and $entry.DockerProfile) {
+                        $activeProfiles += $entry.DockerProfile
                     }
                 }
-                
+
                 $uniqueProfiles = $activeProfiles | Select-Object -Unique | Sort-Object
                 $profileArg = $uniqueProfiles -join ","
-                
+
                 if ($profileArg) {
                     $script:LastProfiles = $profileArg
                     Write-Host "Profils inclus: $profileArg" -ForegroundColor DarkGray
-                    Write-Host "Commande: " -NoNewline -ForegroundColor DarkGray
-                    Write-Host ".\launch.ps1 -p $profileArg" -ForegroundColor Yellow
-                    & .\launch.ps1 -p $profileArg
+                    Invoke-MenuScript 'launch.ps1' ([ordered]@{ p = $profileArg })
                 }
                 else {
                     $script:LastProfiles = $null
-                    Write-Host "Commande: " -NoNewline -ForegroundColor DarkGray
-                    Write-Host ".\launch.ps1" -ForegroundColor Yellow
-                    & .\launch.ps1
+                    Invoke-MenuScript 'launch.ps1'
                 }
                 Wait-AnyKey
             }
             "m" {
                 Write-Host "▶️  Démarrage des services minimums (sans profils)..." -ForegroundColor Cyan
-                Write-Host "Commande: " -NoNewline -ForegroundColor DarkGray
-                Write-Host ".\launch.ps1" -ForegroundColor Yellow
-                & .\launch.ps1
+                Invoke-MenuScript 'launch.ps1'
                 Wait-AnyKey
             }
             "2" {
@@ -216,123 +314,89 @@ function Main {
             }
             "3" {
                 Write-Host "🔄 Recréation des services..." -ForegroundColor Yellow
-                
+
                 if ($script:LastProfiles) {
                     Write-Host "Utilisation des derniers profils : $script:LastProfiles" -ForegroundColor DarkGray
-                    Write-Host "Commande: " -NoNewline -ForegroundColor DarkGray
-                    Write-Host ".\launch.ps1 -c recreate -p $script:LastProfiles" -ForegroundColor Yellow
-                    & .\launch.ps1 -c recreate -p $script:LastProfiles
+                    Invoke-MenuScript 'launch.ps1' ([ordered]@{ c = 'recreate'; p = $script:LastProfiles })
                 }
                 else {
-                    Write-Host "Commande: " -NoNewline -ForegroundColor DarkGray
-                    Write-Host ".\launch.ps1 -c recreate" -ForegroundColor Yellow
-                    & .\launch.ps1 -c recreate
+                    Invoke-MenuScript 'launch.ps1' ([ordered]@{ c = 'recreate' })
                 }
                 Wait-AnyKey
             }
             "4" {
                 Write-Host "⏹️  Arrêt de tous les services..." -ForegroundColor Red
-                Write-Host "Commande: " -NoNewline -ForegroundColor DarkGray
-                Write-Host ".\launch.ps1 -c stop" -ForegroundColor Yellow
-                & .\launch.ps1 -c stop
+                Invoke-MenuScript 'launch.ps1' ([ordered]@{ c = 'stop' })
                 Wait-AnyKey
             }
             "5" {
                 Write-Host "📋 Listing des containers actifs..." -ForegroundColor Cyan
-                Write-Host "Commande: " -NoNewline -ForegroundColor DarkGray
-                Write-Host ".\launch.ps1 -c ps" -ForegroundColor Yellow
-                & .\launch.ps1 -c ps
+                Invoke-MenuScript 'launch.ps1' ([ordered]@{ c = 'ps' })
                 Wait-AnyKey
             }
             "6" {
                 Write-Host "➕ Ajout d'un nouveau profil..." -ForegroundColor Cyan
-                Write-Host "Commande: " -NoNewline -ForegroundColor DarkGray
-                Write-Host ".\manage-profiles.ps1 -Action add" -ForegroundColor Yellow
-                & .\manage-profiles.ps1 -Action add
+                Invoke-MenuScript 'manage-profiles.ps1' ([ordered]@{ Action = 'add' })
                 Wait-AnyKey
             }
             "7" {
                 Write-Host "📝 Liste des profils..." -ForegroundColor Cyan
-                Write-Host "Commande: " -NoNewline -ForegroundColor DarkGray
-                Write-Host ".\manage-profiles.ps1 -Action list" -ForegroundColor Yellow
-                & .\manage-profiles.ps1 -Action list
+                Invoke-MenuScript 'manage-profiles.ps1' ([ordered]@{ Action = 'list' })
                 Wait-AnyKey
             }
             "8" {
                 Write-Host "🔧 Regénération de docker-compose.yml..." -ForegroundColor Yellow
-                Write-Host "Commande: " -NoNewline -ForegroundColor DarkGray
-                Write-Host ".\manage-profiles.ps1 -Action generate" -ForegroundColor Yellow
-                & .\manage-profiles.ps1 -Action generate
+                Invoke-MenuScript 'manage-profiles.ps1' ([ordered]@{ Action = 'generate' })
                 Wait-AnyKey
             }
             "9" {
                 Write-Host "✅ Validation des profils..." -ForegroundColor Cyan
-                Write-Host "Commande: " -NoNewline -ForegroundColor DarkGray
-                Write-Host ".\validate-profiles.ps1" -ForegroundColor Yellow
-                & .\validate-profiles.ps1
+                Invoke-MenuScript 'validate-profiles.ps1'
                 Wait-AnyKey
             }
             "10" {
                 Write-Host "✏️  Édition des secrets..." -ForegroundColor Cyan
-                Write-Host "Commande: " -NoNewline -ForegroundColor DarkGray
-                Write-Host ".\launch.ps1 -c edit-secrets" -ForegroundColor Yellow
-                & .\launch.ps1 -c edit-secrets
+                Invoke-MenuScript 'launch.ps1' ([ordered]@{ c = 'edit-secrets' })
                 Wait-AnyKey
             }
             "11" {
                 Write-Host "👁️  Affichage des secrets..." -ForegroundColor Cyan
-                Write-Host "Commande: " -NoNewline -ForegroundColor DarkGray
-                Write-Host ".\launch.ps1 -c view-secrets" -ForegroundColor Yellow
-                & .\launch.ps1 -c view-secrets
+                Invoke-MenuScript 'launch.ps1' ([ordered]@{ c = 'view-secrets' })
                 Wait-AnyKey
             }
             "12" {
                 Write-Host "🆕 Initialisation de secrets.env..." -ForegroundColor Cyan
-                Write-Host "Commande: " -NoNewline -ForegroundColor DarkGray
-                Write-Host ".\manage-profiles.ps1 -Action init-secrets" -ForegroundColor Yellow
-                & .\manage-profiles.ps1 -Action init-secrets
+                Invoke-MenuScript 'manage-profiles.ps1' ([ordered]@{ Action = 'init-secrets' })
                 Wait-AnyKey
             }
             "13" {
                 Write-Host "🔄 Synchronisation de secrets.env..." -ForegroundColor Cyan
-                Write-Host "Commande: " -NoNewline -ForegroundColor DarkGray
-                Write-Host ".\manage-profiles.ps1 -Action sync-secrets" -ForegroundColor Yellow
-                & .\manage-profiles.ps1 -Action sync-secrets
+                Invoke-MenuScript 'manage-profiles.ps1' ([ordered]@{ Action = 'sync-secrets' })
                 Wait-AnyKey
             }
             "14" {
                 Write-Host "🔐 Connexion AWS SSO..." -ForegroundColor Cyan
-                Write-Host "Commande: " -NoNewline -ForegroundColor DarkGray
-                Write-Host ".\launch.ps1 -c sso" -ForegroundColor Yellow
-                & .\launch.ps1 -c sso
+                Invoke-MenuScript 'launch.ps1' ([ordered]@{ c = 'sso' })
                 Wait-AnyKey
             }
             "15" {
                 Write-Host "🪪 Identité AWS actuelle:" -ForegroundColor Cyan
-                Write-Host "Commande: " -NoNewline -ForegroundColor DarkGray
-                Write-Host ".\launch.ps1 -c id" -ForegroundColor Yellow
-                & .\launch.ps1 -c id
+                Invoke-MenuScript 'launch.ps1' ([ordered]@{ c = 'id' })
                 Wait-AnyKey
             }
             "16" {
                 Write-Host "🐳 Connexion Docker à AWS ECR..." -ForegroundColor Cyan
-                Write-Host "Commande: " -NoNewline -ForegroundColor DarkGray
-                Write-Host ".\launch.ps1 -c ecr-login" -ForegroundColor Yellow
-                & .\launch.ps1 -c ecr-login
+                Invoke-MenuScript 'launch.ps1' ([ordered]@{ c = 'ecr-login' })
                 Wait-AnyKey
             }
             "17" {
                 Write-Host "📖 Ouverture de README.md..." -ForegroundColor Cyan
                 if (Test-Path README.md) {
-                    if (Get-Command code -ErrorAction SilentlyContinue) {
-                        & code README.md
-                    }
-                    else {
-                        & notepad README.md
-                    }
+                    Open-Readme
                 }
                 else {
                     Write-Warning "README.md non trouvé"
+                    Wait-AnyKey
                 }
             }
             "0" {
@@ -345,22 +409,44 @@ function Main {
             }
             default {
                 Write-Host "❌ Option invalide. Veuillez réessayer." -ForegroundColor Red
-                Start-Sleep -Seconds 2
+                Wait-AnyKey
             }
         }
     } while ($true)
 }
 
-# Vérifier que les fichiers nécessaires existent
-if (-not (Test-Path .\launch.ps1)) {
-    Write-Error "❌ launch.ps1 non trouvé"
-    exit 1
-}
+# Le menu travaille dans le dossier du script, quel que soit le dossier d'où il est lancé.
+# Comme il peut être lancé dans une session existante, le dossier, l'encodage de la console
+# et les paramètres par défaut de l'appelant sont rétablis à la sortie, y compris sur Ctrl+C.
+$callerLocation = Get-Location
+$callerOutputEncoding = [Console]::OutputEncoding
+$callerHadEncodingDefault = $PSDefaultParameterValues.ContainsKey('*:Encoding')
+$callerEncodingDefault = $PSDefaultParameterValues['*:Encoding']
 
-if (-not (Test-Path .\manage-profiles.ps1)) {
-    Write-Error "❌ manage-profiles.ps1 non trouvé"
-    exit 1
-}
+try {
+    Set-Location -LiteralPath $PSScriptRoot
 
-# Lancer le menu
-Main
+    $PSDefaultParameterValues['*:Encoding'] = 'UTF8'
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
+    # Vérifier que les fichiers nécessaires existent
+    foreach ($requiredScript in 'launch.ps1', 'manage-profiles.ps1') {
+        if (-not (Test-Path ".\$requiredScript")) {
+            Write-Host "❌ $requiredScript non trouvé" -ForegroundColor Red
+            exit 1
+        }
+    }
+
+    # Lancer le menu
+    Main
+}
+finally {
+    if ($callerHadEncodingDefault) {
+        $PSDefaultParameterValues['*:Encoding'] = $callerEncodingDefault
+    }
+    else {
+        $PSDefaultParameterValues.Remove('*:Encoding')
+    }
+    [Console]::OutputEncoding = $callerOutputEncoding
+    Set-Location -LiteralPath $callerLocation.Path
+}

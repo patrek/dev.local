@@ -1,0 +1,16 @@
+# Indentation de 4 espaces avec expose_ports: true : ports publiés sur 127.0.0.1
+name: indent4-exposed
+description: "Profil indenté de 4 espaces, ports publiés"
+enabled: true
+always_active: true
+docker_profile: null
+expose_ports: true
+
+docker-compose:
+    image: nginx:alpine
+    container_name: indent4-exposed
+    ports:
+        - "8024:80"
+
+traefik:
+    enabled: false

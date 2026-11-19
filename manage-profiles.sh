@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Gestionnaire de profils pour Dev.Local 2.0
 # Script pour ajouter, modifier, supprimer et lister des profils de services
 # Génère automatiquement docker-compose.yml et la configuration Traefik
@@ -17,7 +17,7 @@ CONFIG_FILE="config.yml"
 # Configuration par défaut
 DOZZLE_ENABLED=true
 DOZZLE_PORT=9999
-NAMESPACE="default"
+NAMESPACE="devlocal"
 
 # yq local ou via Docker (voir lib/yq.sh)
 source "lib/yq.sh"
@@ -36,130 +36,67 @@ value_or_default() {
     fi
 }
 
-# Lit plusieurs champs scalaires d'un fichier YAML en un seul appel yq.
-# Usage : read_yaml_fields <fichier> <chemin>...
-# Résultat dans le tableau YAML_FIELDS (même ordre que les chemins, "null" si absent).
-read_yaml_fields() {
-    local file="$1"
-    shift
-    local expr
-    expr=$(IFS=,; echo "$*")
-    mapfile -t YAML_FIELDS < <(yq e "$expr" "$file" 2>/dev/null)
-}
+# Expression yq : noms des volumes nommés de la section docker-compose.volumes d'un profil,
+# un par ligne. Un volume nommé doit être déclaré dans la section volumes: de premier
+# niveau, sinon docker compose refuse le fichier.
+#   - syntaxe courte "nom:/chemin[:mode]" : la source est un nom de volume (au moins deux
+#     caractères, sinon Compose y voit une lettre de lecteur Windows), pas un chemin
+#     (./, /, ~, C:\) ni une variable (${VAR}) ;
+#   - syntaxe longue : type: volume avec une source.
+# Les montages de dossiers et les volumes anonymes ne sont pas retournés.
+NAMED_VOLUMES_EXPR='(.["docker-compose"].volumes | select(tag == "!!seq") | .[] | (
+    (select(tag == "!!str") | select(test("^[a-zA-Z0-9][a-zA-Z0-9_.-]+:")) | sub(":.*$"; "")),
+    (select(tag == "!!map" and .type == "volume") | .source
+        | select(tag == "!!str" and test("^[a-zA-Z0-9][a-zA-Z0-9_.-]*$")))
+))'
 
-# Extraire le nom de la clé YAML d'une ligne (ex: "  image: nginx" -> "image")
-# Usage: key_from_line "  image: nginx"
-key_from_line() {
-    echo "$1" | sed -E 's/:[[:space:]].*//; s/:[[:space:]]*$//'
-}
+# Expression yq : section docker-compose d'un profil, réécrite par yq pour être traitée
+# ligne par ligne dans generate_docker_compose, quelle que soit l'écriture du profil :
+#   - indentation de 2 espaces et style bloc pour la section, ports et environment
+#     (jamais [..] ni {..} sur une ligne), clés de la section sans guillemets ;
+#   - environment toujours en liste : la forme map (CLE: valeur) devient CLE=valeur, dans
+#     l'ordre du fichier et avec le texte tel qu'il est écrit (CLE: sans valeur donne CLE=) ;
+#     une liste vide est créée si la clé est absente ;
+#   - ancres et alias résolus, commentaires retirés ;
+#   - ports en syntaxe longue (target / published) : host_ip: 127.0.0.1 ajouté s'il est absent,
+#     comme bind_port_to_localhost le fait pour la syntaxe courte ;
+#   - ports et volumes absents (null) retirés : yq crée ces clés à la lecture d'un chemin
+#     absent, ici et dans NAMED_VOLUMES_EXPR.
+COMPOSE_SECTION_EXPR='(.["docker-compose"] | select(tag == "!!map") | explode(.)
+    | (.[] | key) style = ""
+    | with(.environment | select(tag == "!!null"); . = [])
+    | with(.environment | select(tag == "!!map");
+        . = (to_entries | map((.key | tostring) + "=" + (.value | with(select(tag == "!!null"); . = "") | tostring))))
+    | with(.ports | select(tag == "!!seq") | .[] | select(tag == "!!map" and (has("host_ip") | not));
+        .host_ip = "127.0.0.1")
+    | (., (.ports, .environment | select(tag == "!!seq"))) style = ""
+    | ... comments = ""
+    | del((.ports, .volumes) | select(tag == "!!null")))'
+# Ligne qui précède la section docker-compose dans la sortie de yq (jamais un nom de volume)
+COMPOSE_SECTION_MARKER='#--docker-compose--'
 
-# Insérer du contenu après la première ligne dont la clé correspond
-# Usage: insert_content_after_key "$text" "$content" "key1|key2"
-# Retourne le texte modifié via stdout
-insert_content_after_key() {
-    local text="$1"
-    local content="$2"
-    local keys_pattern="$3"
-    local result=""
-    local inserted=false
+# Lie une entrée de port (syntaxe courte) à 127.0.0.1 si elle ne précise pas d'IP hôte.
+#   "8090:80" -> "127.0.0.1:8090:80"      "80" -> "127.0.0.1::80"
+# Les entrées avec IP explicite (ex: "0.0.0.0:8090:80") et la syntaxe longue sont conservées.
+bind_port_to_localhost() {
+    local line="$1"
+    local pattern='^([[:space:]]*-[[:space:]]*["'"'"']?)([^"'"'"'#[:space:]]+)(.*)$'
 
-    while IFS= read -r line; do
-        result="${result}${line}"$'\n'
-        if [ "$inserted" = false ] && echo "$line" | grep -qE "^ *(${keys_pattern})"; then
-            result="${result}${content}"$'\n'
-            inserted=true
+    if [[ "$line" =~ $pattern ]]; then
+        local prefix="${BASH_REMATCH[1]}" spec="${BASH_REMATCH[2]}" rest="${BASH_REMATCH[3]}"
+        if [[ "$spec" != *: ]]; then
+            # Compter les ':' en ignorant ceux des ${VAR:-defaut}
+            local outside_vars
+            outside_vars=$(echo "$spec" | sed 's/\${[^}]*}//g')
+            local colons="${outside_vars//[^:]/}"
+            case "${#colons}" in
+                0) spec="127.0.0.1::$spec" ;;
+                1) spec="127.0.0.1:$spec" ;;
+            esac
         fi
-    done <<< "$text"
-
-    printf '%s' "$result"
-}
-
-# Nettoyer un item YAML : supprime commentaires inline, espaces, et guillemets
-# Usage: clean_yaml_item "item" [strip_dash] [strip_quotes]
-clean_yaml_item() {
-    local item="$1"
-    [ -z "$item" ] && return
-    local strip_dash="${2:-false}"
-    local strip_quotes="${3:-false}"
-
-    # Supprimer les commentaires inline et les espaces
-    item=$(echo "$item" | sed -E 's/[[:space:]]+#.*//; s/^[[:space:]]+//; s/[[:space:]]+$//')
-
-    # Supprimer le tiret YAML si demandé
-    if [ "$strip_dash" = true ]; then
-      item=$(echo "$item" | sed -E 's/^-[[:space:]]*//')
+        line="${prefix}${spec}${rest}"
     fi
-
-    # Supprimer les guillemets si demandé
-    if [ "$strip_quotes" = true ]; then
-        item=$(echo "$item" | sed -E 's/^"(.*)"$/\1/')
-    fi
-
-    printf '%s' "$item"
-}
-
-# Block normalization
-# Usage: normalize_block "block" [indent_level] [output_format]
-#   indent_level: 2 or 4 (default: 4)
-#   output_format: "list" (default) or "map"
-# Converts any block format (list, map, raw key=value) to normalized output
-normalize_block() {
-    local block="$1"
-    local indent="${2:-4}"
-    local format="${3:-list}"
-    local result=""
-    local prefix
-    prefix=$(printf '%*s' "$indent" '')
-
-    [ -z "$block" ] && { printf '%s' "$result"; return; }
-
-    # Detect input format
-    local is_list_dash=false
-    local is_map=false
-    local is_list_raw=false
-
-    if echo "$block" | grep -qE "^[[:space:]]*[-][[:space:]]"; then
-        is_list_dash=true
-    elif echo "$block" | grep -qE "^[[:space:]]+[A-Z_]+:"; then
-        is_map=true
-    elif echo "$block" | sed 's/^[[:space:]]*//' | grep -qE "^[A-Z_]+=.+" || echo "$block" | sed 's/^[[:space:]]*//' | grep -qvE "^[[:space:]]*$|#|^[[:space:]]*[A-Za-z_]+:"; then
-        is_list_raw=true
-    fi
-
-    if [ "$is_list_dash" = true ] && [ "$format" = "list" ]; then
-        while IFS= read -r item; do
-            item=$(clean_yaml_item "$item" true false)
-            [ -n "$item" ] && result="${result}${prefix}- ${item}"$'\n'
-        done <<< "$block"
-    elif [ "$is_map" = true ]; then
-        if [ "$format" = "map" ]; then
-            while IFS= read -r item; do
-                item=$(clean_yaml_item "$item" false false)
-                [ -z "$item" ] && continue
-                local k v
-                k=$(echo "$item" | cut -d: -f1)
-                v=$(echo "$item" | cut -d: -f2- | sed -E 's/^[[:space:]]+//; s/^"(.*)"$/\1/')
-                [ -n "$k" ] && result="${result}${prefix}${k}: ${v}"$'\n'
-            done <<< "$block"
-        else
-            while IFS= read -r item; do
-                item=$(clean_yaml_item "$item" false false)
-                [ -z "$item" ] && continue
-                local k v
-                k=$(echo "$item" | cut -d: -f1)
-                v=$(echo "$item" | cut -d: -f2- | sed -E 's/^[[:space:]]+//')
-                v=$(clean_yaml_item "$v" false true)
-                [ -n "$k" ] && result="${result}${prefix}- ${k}=${v}"$'\n'
-            done <<< "$block"
-        fi
-    elif [ "$is_list_raw" = true ]; then
-        while IFS= read -r item; do
-            item=$(clean_yaml_item "$item" false false)
-            [ -n "$item" ] && result="${result}${prefix}- ${item}"$'\n'
-        done <<< "$block"
-    fi
-
-    printf '%s' "$result"
+    echo "$line"
 }
 
 # Charger la configuration
@@ -177,7 +114,8 @@ load_config() {
 
 # Fonction pour charger les variables d'environnement partagées
 # Nécessite load_config. Retourne une variable par ligne : les groupes auto_inject,
-# puis les groupes service_specific du service. Rien si le service est exclu.
+# puis les groupes service_specific du service, chaque groupe une seule fois.
+# Rien si le service est exclu.
 get_shared_env_vars() {
     local service_name="$1"
 
@@ -190,7 +128,7 @@ get_shared_env_vars() {
     done
 
     yq e ".shared_env as \$env
-        | ((.shared_env_config.auto_inject // []) + (.shared_env_config.service_specific[\"$service_name\"] // []))
+        | (((.shared_env_config.auto_inject // []) + (.shared_env_config.service_specific[\"$service_name\"] // [])) | unique)
         | .[] as \$group
         | \$env[\$group]
         | .[]" "$CONFIG_FILE" 2>/dev/null || true
@@ -259,9 +197,13 @@ add_profile() {
     [ -z "$local_port" ] && local_port=$docker_port
     
     # Port mapping docker-compose (host:container) can be same as local_port:docker_port or different
-    read -p "Port binding Docker (host:container) (Entrée pour utiliser $local_port:$docker_port, 'none' pour aucun): " host_binding
-    if [ -z "$host_binding" ]; then
-        host_binding="$local_port:$docker_port"
+    # Par défaut le service n'est joignable que via Traefik ; publier un port est optionnel
+    read -p "Publier aussi un port sur l'hôte (hôte:conteneur, ex: 9000:$docker_port, Entrée pour aucun): " host_binding
+    expose_ports="false"
+    ports_section=""
+    if [ -n "$host_binding" ] && [ "$host_binding" != "none" ]; then
+        expose_ports="true"
+        ports_section=$'\n'"  ports:"$'\n'"    - \"$host_binding\""
     fi
     
     echo -e "\n\033[93m🔑 Activation du service\033[0m"
@@ -331,12 +273,11 @@ description: "$description"
 enabled: true
 always_active: $always_active
 docker_profile: $docker_profile
+expose_ports: $expose_ports
 
 docker-compose:
   image: $image
-  container_name: $name
-  ports:
-    - "$host_binding"
+  container_name: $name$ports_section
   environment:
 $all_env
   healthcheck:
@@ -402,21 +343,38 @@ generate_docker_compose() {
 name: $NAMESPACE
 
 services:
+  # Proxy du socket Docker : seul conteneur qui monte le socket.
+  # Traefik et Dozzle passent par lui et n'ont accès qu'à des requêtes de lecture
+  # (conteneurs, événements, infos) ; aucune requête d'écriture n'est acceptée.
+  socket-proxy:
+    image: tecnativa/docker-socket-proxy:v0.5.0
+    container_name: ${NAMESPACE}_socket_proxy
+    environment:
+      - CONTAINERS=1  # liste, logs et stats des conteneurs (Traefik, Dozzle)
+      - INFO=1        # requis par Dozzle pour se connecter
+      - POST=0        # refuse toute requête d'écriture
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - socket-proxy
+
   # Reverse Proxy Traefik
   traefik:
     image: traefik:v3.6.4
-    container_name: ${COMPOSE_PROJECT_NAME:-devlocal}_traefik
+    container_name: ${NAMESPACE}_traefik
     ports:
       - "127.0.0.1:8080:80"
       - "127.0.0.1:8081:8080"
     extra_hosts:
       - "external-ip:host-gateway"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
       - ./traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro
     networks:
       - traefik-network
+      - socket-proxy
+    depends_on:
+      - socket-proxy
     healthcheck:
       test: ["CMD", "traefik", "healthcheck"]
       interval: 10s
@@ -430,19 +388,21 @@ EOF
         cat >> "$DOCKER_COMPOSE_FILE" << EOF
   # Monitoring des logs
   dozzle:
-    image: amir20/dozzle:latest
-    container_name: ${COMPOSE_PROJECT_NAME:-devlocal}_dozzle
+    image: amir20/dozzle:v11.5.0
+    container_name: ${NAMESPACE}_dozzle
     ports:
       - "127.0.0.1:$DOZZLE_PORT:8080"
     environment:
       - DOZZLE_TIMEOUT=15s
       - DOZZLE_BASE=/logs
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - DOCKER_HOST=tcp://socket-proxy:2375
     extra_hosts:
       - "external-ip:host-gateway"
     networks:
       - traefik-network
+      - socket-proxy
+    depends_on:
+      - socket-proxy
     healthcheck:
       test: ["CMD", "/dozzle", "healthcheck"]
       interval: 3s
@@ -452,10 +412,14 @@ EOF
     fi
     
     # Ajouter chaque service
+    local named_volumes=()
     for profile in "$PROFILES_DIR"/*.yml; do
         [ -f "$profile" ] || continue
-        
-        read_yaml_fields "$profile" .enabled .name .always_active .docker_profile
+
+        # Les volumes nommés puis la section docker-compose normalisée suivent les cinq
+        # champs scalaires (même appel yq) ; un marqueur sépare ces deux listes de lignes
+        read_yaml_fields "$profile" .enabled .name .always_active .docker_profile .expose_ports \
+            "$NAMED_VOLUMES_EXPR" "\"$COMPOSE_SECTION_MARKER\"" "$COMPOSE_SECTION_EXPR"
         local enabled
         enabled=$(value_or_default "${YAML_FIELDS[0]}" true)
         if [ "$enabled" != "true" ]; then
@@ -470,6 +434,9 @@ EOF
         # Chaîne vide si docker_profile est absent ou null
         local docker_profile
         docker_profile=$(value_or_default "${YAML_FIELDS[3]}" "")
+        # Sans expose_ports, la section ports est retirée : le service passe par Traefik
+        local expose_ports
+        expose_ports=$(value_or_default "${YAML_FIELDS[4]}" false)
         echo -e "  \033[92m✅ Ajout : $(basename "$profile" .yml)\033[0m"
 
         # Charger les variables partagées pour ce service
@@ -481,89 +448,73 @@ EOF
             echo -e "    \033[90m📌 $shared_count variable(s) partagée(s)\033[0m"
         fi
 
-        # Extraire la section docker-compose:
-        local compose_section
-        compose_section=$(sed -n '/^docker-compose:/,/^[a-z]/{//!p}' "$profile")
-
-        # Traiter la section environment pour injecter les variables partagées
-        local filtered_compose=""
-        local in_ports=false
-        local environment_block=""
-        local environment_indent=""
-
-        while IFS= read -r line; do
-            # Gérer la section ports
-            if echo "$line" | grep -q "^  ports:"; then
-                in_ports=true
-                continue
+        # La section docker-compose normalisée par yq suit le marqueur, les volumes nommés le précèdent
+        local compose_lines=()
+        local field_index
+        for field_index in "${!YAML_FIELDS[@]}"; do
+            if [ "$field_index" -ge 5 ] && [ "${YAML_FIELDS[$field_index]}" = "$COMPOSE_SECTION_MARKER" ]; then
+                named_volumes+=("${YAML_FIELDS[@]:5:$((field_index - 5))}")
+                compose_lines=("${YAML_FIELDS[@]:$((field_index + 1))}")
+                break
             fi
-            if [ "$in_ports" = true ]; then
-                if echo "$line" | grep -q "^    "; then
-                    continue
-                else
-                    in_ports=false
+        done
+
+        # Recopier la section dans le service. Une ligne non indentée est une clé de la section ;
+        # les lignes indentées qui la suivent sont sa valeur.
+        local service_body=""
+        local current_key=""
+        local ports_ignored=false
+        local line
+        for line in "${compose_lines[@]}"; do
+            if [ -n "$line" ] && [[ "$line" != " "* ]]; then
+                current_key="${line%%:*}"
+
+                if [ "$current_key" = "ports" ] && [ "$expose_ports" != "true" ]; then
+                    ports_ignored=true
                 fi
-            fi
 
-            # Détecter et capturer le bloc environment
-            if echo "$line" | grep -q "^  environment:"; then
-                environment_indent=$(echo "$line" | sed 's/[^ ].*//')
-                environment_block=""
-                continue
-            fi
+                # environment est toujours une liste : "environment:" suivi de ses éléments,
+                # ou "environment: []" si le profil n'a aucune variable
+                if [ "$line" = "environment:" ] || [ "$line" = "environment: []" ]; then
+                    # Sans variable d'aucune sorte, le service n'a pas de clé environment
+                    [ "$line" = "environment: []" ] && [ -z "$shared_env_vars" ] && continue
 
-            # Capturer les items environment (indentés)
-            if [ -n "$environment_indent" ]; then
-                local line_indent
-                line_indent=$(echo "$line" | sed 's/[^ ].*//')
-                if [ "${#line_indent}" -gt "${#environment_indent}" ] || echo "$line" | grep -q "^[[:space:]]*[-]"; then
-                    environment_block="${environment_block}${line}"$'\n'
-                    continue
-                else
-                    environment_indent=""
-                fi
-            fi
-
-            filtered_compose="${filtered_compose}${line}"$'\n'
-        done <<< "$compose_section"
-
-        # Gérer le cas où le fichier se termine dans un bloc environment
-        if [ -n "$environment_indent" ] && [ -n "$environment_block" ]; then
-            environment_block=$(normalize_block "$environment_block" 4 "list")
-            environment_indent=""
-        fi
-
-        # Construire et injecter le bloc environment complet
-        if [ -n "$shared_env_vars" ] || [ -n "$environment_block" ]; then
-            local env_body=""
-            if [ -n "$shared_env_vars" ]; then
-                env_body+="    # Variables partagées (depuis config.yml)"$'\n'
-                while IFS= read -r var; do
-                    [ -n "$var" ] && env_body+="    - ${var}"$'\n'
-                done <<< "$shared_env_vars"
-            fi
-            local svc_items=""
-            if [ -n "$environment_block" ]; then
-                svc_items=$(normalize_block "$environment_block")
-                if [ -n "$svc_items" ]; then
+                    service_body+="    environment:"$'\n'
                     if [ -n "$shared_env_vars" ]; then
-                        env_body+="    # Variables exclusives du service"$'\n'
+                        service_body+="      # Variables partagées (depuis config.yml)"$'\n'
+                        local var
+                        while IFS= read -r var; do
+                            [ -n "$var" ] && service_body+="      - ${var}"$'\n'
+                        done <<< "$shared_env_vars"
+                        if [ "$line" = "environment:" ]; then
+                            service_body+="      # Variables exclusives du service"$'\n'
+                        fi
                     fi
-                    env_body+="${svc_items}"$'\n'
+                    continue
                 fi
             fi
 
-            local complete_env_section
-            complete_env_section="  environment:"$'\n'"${env_body}"
-            filtered_compose=$(insert_content_after_key "$filtered_compose" "$complete_env_section" "container_name|image")
+            # Section ports : publiée sur 127.0.0.1 si expose_ports, retirée sinon
+            if [ "$current_key" = "ports" ]; then
+                [ "$expose_ports" = "true" ] || continue
+                # Éléments de la liste ; les lignes plus indentées (syntaxe longue) sont conservées
+                if [[ "$line" == "  - "* ]]; then
+                    line=$(bind_port_to_localhost "$line")
+                fi
+            fi
+
+            if [ -n "$line" ]; then
+                service_body+="    ${line}"$'\n'
+            else
+                service_body+=$'\n'
+            fi
+        done
+
+        if [ "$ports_ignored" = true ]; then
+            echo -e "    \033[90m🔒 Ports non publiés (expose_ports: true pour les publier sur 127.0.0.1)\033[0m"
         fi
 
-        # Ajouter 2 espaces d'indentation
-        local indented
-        indented=$(echo "$filtered_compose" | sed 's/^  /    /')
-
-        # Nettoyer l'indentation (retirer les lignes vides en fin)
-        indented=$(echo "$indented" | sed -e :a -e '/^\s*$/d;N;ba')
+        local indented="${service_body%$'\n'}"
 
         # Section profiles si not always_active ET docker_profile n'est pas null/vide
         local profiles_section=""
@@ -589,8 +540,21 @@ EOF
 networks:
   traefik-network:
     driver: bridge
+  # Réseau interne réservé à socket-proxy, Traefik et Dozzle :
+  # les services des profils ne peuvent pas joindre l'API Docker
+  socket-proxy:
+    driver: bridge
+    internal: true
 EOF
-    
+
+    # Volumes nommés utilisés par les profils activés : déclarés une fois, triés
+    if [ "${#named_volumes[@]}" -gt 0 ]; then
+        {
+            printf '\nvolumes:\n'
+            printf '%s\n' "${named_volumes[@]}" | LC_ALL=C sort -u | sed 's/.*/  &:/'
+        } >> "$DOCKER_COMPOSE_FILE"
+    fi
+
     echo -e "\n\033[92m✅ docker-compose.yml généré\033[0m"
     
     # Générer aussi la config Traefik
@@ -704,6 +668,66 @@ EOF
     echo -e "\033[92m✅ traefik/dynamic.yml généré\033[0m"
 }
 
+# Détecte les variables de secrets des profils activés, sans SOPS ni déchiffrement.
+# Résultat dans le tableau associatif global SECRET_VARS (nom -> valeur par défaut).
+detect_secret_vars() {
+    declare -gA SECRET_VARS=()
+    local profile
+
+    for profile in "$PROFILES_DIR"/*.yml; do
+        [ -f "$profile" ] || continue
+        
+        read_yaml_fields "$profile" .enabled .name
+        local enabled
+        enabled=$(value_or_default "${YAML_FIELDS[0]}" true)
+        [ "$enabled" != "true" ] && continue
+
+        local profile_name
+        profile_name=$(value_or_default "${YAML_FIELDS[1]}" "$(basename "$profile" .yml)")
+
+        # Méthode 1 : section secrets: (même vide, elle désactive l'auto-détection)
+        if grep -q "^secrets:" "$profile"; then
+            # Un secret par ligne : nom, valeur par défaut, description, type YAML de la
+            # valeur par défaut (séparateur US, \x1f). Une valeur par défaut présente est
+            # conservée telle quelle, même 0, false ou "" ; absente ou null : "changeme".
+            # (pas d'opérateur yq '//' ici : il remplacerait aussi false)
+            local sep=$'\x1f'
+            local secret_name secret_default secret_desc default_tag
+            while IFS="$sep" read -r secret_name secret_default secret_desc default_tag; do
+                [ "$default_tag" = "!!null" ] && secret_default="changeme"
+
+                if [ -n "$secret_name" ] && [ -z "${SECRET_VARS[$secret_name]+x}" ]; then
+                    SECRET_VARS["$secret_name"]="$secret_default"
+                    echo -e "  \033[90m📌 [$profile_name] $secret_name ($secret_desc)\033[0m"
+                fi
+            done < <(yq e ".secrets[] | [.name, .default, .description, (.default | tag)] | (.[] | select(tag == \"!!null\")) = \"\" | join(\"$sep\")" "$profile" 2>/dev/null || true)
+        else
+            # Méthode 2 (fallback, profil sans section secrets:) : variables ${VAR:-defaut}
+            # des entrées de docker-compose.environment uniquement.
+            # L'image, les ports et les commentaires ne sont pas des secrets.
+            while IFS= read -r match; do
+                local var_name
+                var_name=$(echo "$match" | sed 's/.*\${\([A-Z_][A-Z0-9_]*\).*/\1/')
+                local default_value
+                default_value=$(echo "$match" | sed 's/.*:-\([^}]*\)}.*/\1/')
+                [ -z "$default_value" ] && default_value="changeme"
+            
+                if [ -n "$var_name" ] && [ -z "${SECRET_VARS[$var_name]+x}" ]; then
+                    SECRET_VARS["$var_name"]="$default_value"
+                    echo -e "  \033[90m📌 [$profile_name] $var_name (auto-détecté)\033[0m"
+                fi
+            done < <(yq e '.docker-compose.environment[]' "$profile" 2>/dev/null | grep -o '\${[A-Z_][A-Z0-9_]*:-[^}]*}' || true)
+        fi
+    done
+}
+
+# Affiche les noms des variables de secrets détectées, triés, un par ligne
+list_secret_vars() {
+    detect_secret_vars > /dev/null
+    [ ${#SECRET_VARS[@]} -eq 0 ] && return 0
+    printf '%s\n' "${!SECRET_VARS[@]}" | LC_ALL=C sort
+}
+
 # Fonction pour synchroniser secrets.env
 sync_secrets() {
     echo -e "\n\033[96m🔄 SYNCHRONISATION DES SECRETS\033[0m"
@@ -733,102 +757,41 @@ sync_secrets() {
     fi
     
     # Récupérer toutes les variables des profils
-    declare -A secret_vars
+    detect_secret_vars
     
-    for profile in "$PROFILES_DIR"/*.yml; do
-        [ -f "$profile" ] || continue
-        
-        read_yaml_fields "$profile" .enabled .name
-        local enabled
-        enabled=$(value_or_default "${YAML_FIELDS[0]}" true)
-        [ "$enabled" != "true" ] && continue
-
-        local profile_name
-        profile_name=$(value_or_default "${YAML_FIELDS[1]}" "$(basename "$profile" .yml)")
-
-        # Méthode 1 : Lire la section secrets:
-        if grep -q "^secrets:" "$profile"; then
-            local in_secrets=false
-            while IFS= read -r line; do
-                if echo "$line" | grep -q "^secrets:"; then
-                    in_secrets=true
-                    continue
-                fi
-                if [ "$in_secrets" = true ]; then
-                    if echo "$line" | grep -q "^  - name:"; then
-                        local secret_name
-                        secret_name=$(echo "$line" | sed 's/.*name: *//; s/ *#.*//' | tr -d '\r')
-                        local secret_desc=""
-                        local secret_default="changeme"
-                        
-                        # Lire les lignes suivantes pour description et default
-                        while IFS= read -r next_line; do
-                            if echo "$next_line" | grep -q "^    description:"; then
-                                secret_desc=$(echo "$next_line" | sed -E 's/.*description: *"//; s/"$//; s/[[:space:]]+#.*//' | tr -d '\r')
-                            elif echo "$next_line" | grep -q "^    default:"; then
-                                secret_default=$(echo "$next_line" | sed 's/.*default: *//; s/ *#.*//' | tr -d '\r')
-                                break
-                            elif echo "$next_line" | grep -qE "^(  -|[a-z])"; then
-                                break
-                            fi
-                        done
-                        
-                        if [ -n "$secret_name" ] && [ -z "${secret_vars[$secret_name]}" ]; then
-                            secret_vars["$secret_name"]="$secret_default"
-                            echo -e "  \033[90m📌 [$profile_name] $secret_name = $secret_default ($secret_desc)\033[0m"
-                        fi
-                    elif echo "$line" | grep -qE "^[a-z]"; then
-                        break
-                    fi
-                fi
-            done < "$profile"
-        fi
-        
-        # Méthode 2 (fallback) : Scanner les ${VAR:-default}
-        while IFS= read -r match; do
-            local var_name
-            var_name=$(echo "$match" | sed 's/.*\${\([A-Z_][A-Z0-9_]*\).*/\1/')
-            local default_value
-            default_value=$(echo "$match" | sed 's/.*:-\([^}]*\)}.*/\1/')
-            [ -z "$default_value" ] && default_value="changeme"
-            
-            if [ -n "$var_name" ] && [ -z "${secret_vars[$var_name]}" ]; then
-                secret_vars["$var_name"]="$default_value"
-                echo -e "  \033[90m📌 [$profile_name] $var_name = $default_value (auto-détecté)\033[0m"
-            fi
-        done < <(grep -o '\${[A-Z_][A-Z0-9_]*:-[^}]*}' "$profile" 2>/dev/null || true)
-    done
-    
-    if [ ${#secret_vars[@]} -eq 0 ]; then
+    if [ ${#SECRET_VARS[@]} -eq 0 ]; then
         echo -e "  \033[93mℹ️  Aucune variable de secrets trouvée dans les profils\033[0m"
         return 0
     fi
     
-    echo -e "\n  \033[96mTotal: ${#secret_vars[@]} variable(s) trouvée(s)\033[0m"
+    echo -e "\n  \033[96mTotal: ${#SECRET_VARS[@]} variable(s) trouvée(s)\033[0m"
     
     # Lire le fichier secrets.env existant
     declare -A existing_secrets
     local secrets_content=""
     
     if [ -f "$SECRETS_FILE" ]; then
-        secrets_content=$(sops -d "$SECRETS_FILE" 2>&1)
-        if [ $? -eq 0 ]; then
-            while IFS='=' read -r key value; do
-                if [[ "$key" =~ ^[A-Z_][A-Z0-9_]*$ ]]; then
-                    existing_secrets["$key"]="$value"
-                fi
-            done <<< "$secrets_content"
-            echo -e "\n  \033[92m✅ Fichier secrets.env déchiffré (${#existing_secrets[@]} variables existantes)\033[0m"
-        else
-            echo -e "\033[93mImpossible de déchiffrer secrets.env. Création d'un nouveau fichier.\033[0m"
+        # Ne pas continuer si le déchiffrement échoue : le fichier existant serait écrasé
+        if ! secrets_content=$(sops -d "$SECRETS_FILE"); then
+            echo -e "\033[91mImpossible de déchiffrer $SECRETS_FILE - aucune modification effectuée.\033[0m"
+            echo -e "\033[93mVérifiez votre clé SOPS, ou supprimez le fichier pour repartir de zéro.\033[0m"
+            return 1
         fi
+
+        while IFS='=' read -r key value; do
+            if [[ "$key" =~ ^[A-Z_][A-Z0-9_]*$ ]]; then
+                existing_secrets["$key"]="$value"
+            fi
+        done <<< "$secrets_content"
+        echo -e "\n  \033[92m✅ Fichier secrets.env déchiffré (${#existing_secrets[@]} variables existantes)\033[0m"
     fi
-    
+
     # Identifier les nouvelles variables
     declare -A new_vars
-    for var in "${!secret_vars[@]}"; do
-        if [ -z "${existing_secrets[$var]}" ]; then
-            new_vars["$var"]="${secret_vars[$var]}"
+    for var in "${!SECRET_VARS[@]}"; do
+        # ${...+x} : une variable présente avec une valeur vide (FOO=) existe déjà
+        if [ -z "${existing_secrets[$var]+x}" ]; then
+            new_vars["$var"]="${SECRET_VARS[$var]}"
         fi
     done
     
@@ -839,7 +802,7 @@ sync_secrets() {
     
     echo -e "\n  \033[93m📝 Variables manquantes à ajouter:\033[0m"
     for var in "${!new_vars[@]}"; do
-        echo -e "     \033[90m- $var=${new_vars[$var]}\033[0m"
+        echo -e "     \033[90m- $var\033[0m"
     done
     
     # Demander confirmation
@@ -853,24 +816,18 @@ sync_secrets() {
     local new_content="$secrets_content"
     [ -n "$new_content" ] && new_content="${new_content}"$'\n'
     new_content="${new_content}"$'\n'"# Variables ajoutées automatiquement le $(date '+%Y-%m-%d %H:%M:%S')"$'\n'
-    for var in $(echo "${!new_vars[@]}" | tr ' ' '\n' | sort); do
+    while IFS= read -r var; do
         new_content="${new_content}${var}=${new_vars[$var]}"$'\n'
-    done
+    done < <(printf '%s\n' "${!new_vars[@]}" | LC_ALL=C sort)
     
-    # Sauvegarder temporairement en clair
-    local temp_file="${SECRETS_FILE}.tmp"
-    echo -n "$new_content" > "$temp_file"
-    
-    # Chiffrer avec SOPS
-    # Note: On passe --filename-override secrets.env pour que SOPS applique les règles de .sops.yaml
-    if output=$(sops -e --filename-override "$SECRETS_FILE" "$temp_file" 2>&1); then
-        echo "$output" > "$SECRETS_FILE"
-        rm -f "$temp_file"
+    # Chiffrer via stdin : le contenu en clair n'est jamais écrit sur disque.
+    # --filename-override fait appliquer à SOPS les règles .sops.yaml de secrets.env
+    local encrypted
+    if encrypted=$(printf '%s' "$new_content" | sops -e --filename-override "$SECRETS_FILE" /dev/stdin); then
+        printf '%s\n' "$encrypted" > "$SECRETS_FILE"
         echo -e "\n  \033[92m✅ secrets.env mis à jour et rechiffré (${#new_vars[@]} variable(s) ajoutée(s))\033[0m"
     else
-        echo -e "\033[91mErreur lors du chiffrement\033[0m"
-        echo "$output"
-        rm -f "$temp_file"
+        echo -e "\033[91mErreur lors du chiffrement - $SECRETS_FILE n'a pas été modifié\033[0m"
         return 1
     fi
 }
@@ -937,7 +894,12 @@ case "$ACTION" in
     sync-secrets)
         sync_secrets
         ;;
+    list-secrets)
+        list_secret_vars
+        ;;
     *)
-        show_profiles
+        echo -e "\033[91mAction inconnue: $ACTION\033[0m" >&2
+        echo "Usage: $0 [add|list|generate|init-secrets|sync-secrets|list-secrets]" >&2
+        exit 1
         ;;
 esac

@@ -4,7 +4,7 @@ namespace: devlocal
 
 # Dozzle - Monitoring des logs Docker via interface web
 dozzle_enabled: true
-dozzle_port: 9999  # Port accessible via http://localhost:9999 ou http://localhost:8080/logs
+dozzle_port: 9999  # Port accessible via http://localhost:9999/logs ou http://localhost:8080/logs
 
 # Docker Registries
 # Configuration des registres Docker pour le projet
@@ -15,6 +15,12 @@ registries:
   ecr:
     url: <id>.dkr.ecr.ca-central-1.amazonaws.com
     description: "AWS ECR - Elastic Container Registry"
+
+# AWS - profil utilisé par "just aws-sso", "just aws-id" et "just ecr-login", région par "just ecr-login"
+# La variable d'environnement AWS_PROFILE, si elle est définie, a priorité sur "profile"
+aws:
+  profile: ESG-DV-PowerUser-SSO
+  region: ca-central-1
 
 # Variables d'environnement partagées
 # Ces variables seront injectées dans tous les services (ou services spécifiques)
@@ -40,8 +46,9 @@ shared_env:
   # Déclarez un groupe dédié avec vos variables
   demo_only:
     - DEMO_ONLY_VAR=demo-only-value
-    # Exemple: renommer/référencer une variable existante
-    - DEMO_API_GATEWAY_URL=${API_GATEWAY_URL}
+    # Les valeurs sont copiées telles quelles : une référence ${VAR} serait résolue par
+    # Docker Compose depuis le shell, .env ou les secrets, pas depuis les autres variables partagées
+    - DEMO_API_GATEWAY_URL=https://api.demo.local
     # - API_GATEWAY_URL=https://api.demo.local  # <- exemple d'override spécifique à demo
 
 # Configuration de l'injection des variables partagées

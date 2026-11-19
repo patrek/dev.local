@@ -1,0 +1,15 @@
+# expect: traefik.local_port doit être entre 1 et 65535 (trouvé: '99999999999999999999999')
+name: port-overflow
+enabled: true
+always_active: true
+docker_profile: null
+
+docker-compose:
+  image: nginx:alpine
+  container_name: port-overflow
+
+traefik:
+  enabled: true
+  prefix: /port-overflow
+  docker_port: 80
+  local_port: 99999999999999999999999

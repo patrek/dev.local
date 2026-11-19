@@ -1,0 +1,11 @@
+# expect: Port invalide dans docker-compose.ports: syntaxe longue sans target (published)
+name: bad-port-long
+enabled: true
+always_active: true
+expose_ports: true
+
+docker-compose:
+  image: nginx:alpine
+  container_name: bad-port-long
+  ports:
+    - published: 8080

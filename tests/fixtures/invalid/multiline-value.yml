@@ -1,0 +1,11 @@
+# expect: Syntaxe YAML invalide
+name: |
+  multiline
+  value
+enabled: true
+always_active: true
+docker_profile: null
+
+docker-compose:
+  image: nginx:alpine
+  container_name: multiline-value

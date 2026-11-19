@@ -1,0 +1,17 @@
+# Écriture en flux ([...]) : ports publiés sur 127.0.0.1 (expose_ports: true)
+# et environment recopié, comme avec l'écriture en bloc
+name: ports-flow
+description: "Ports et environnement en flux"
+enabled: true
+always_active: true
+docker_profile: null
+expose_ports: true
+
+docker-compose:
+  image: nginx:alpine
+  container_name: ports-flow
+  ports: ["8020:80", '${FLOW_ALT_PORT:-8021}:81']
+  environment: [FLOW_MODE=test, "FLOW_LABEL=en flux"]
+
+traefik:
+  enabled: false

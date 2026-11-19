@@ -1,0 +1,13 @@
+# Listé dans exclude_services : ne reçoit aucune variable partagée
+name: excluded
+description: "Service exclu des variables partagées"
+enabled: true
+always_active: true
+docker_profile: null
+
+docker-compose:
+  image: nginx:alpine
+  container_name: excluded
+
+traefik:
+  enabled: false

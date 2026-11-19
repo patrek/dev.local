@@ -1,0 +1,9 @@
+# expect: Champ 'docker-compose.ports' doit être une liste
+name: ports-not-list
+enabled: true
+always_active: true
+
+docker-compose:
+  image: nginx:alpine
+  container_name: ports-not-list
+  ports: "8080:80"

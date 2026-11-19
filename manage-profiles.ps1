@@ -7,7 +7,7 @@
     Génère automatiquement docker-compose.yml et la configuration Traefik.
 
 .PARAMETER Action
-    Action à effectuer : add, list, remove, generate, init-secrets
+    Action à effectuer : add, list, generate, init-secrets, sync-secrets, list-secrets
 
 .EXAMPLE
     .\manage-profiles.ps1 -Action add
@@ -24,19 +24,38 @@
 
 param(
     [Parameter(Mandatory = $false)]
-    [ValidateSet('add', 'list', 'remove', 'enable', 'disable', 'generate', 'init-secrets', 'sync-secrets')]
+    [ValidateSet('add', 'list', 'generate', 'init-secrets', 'sync-secrets', 'list-secrets')]
     [string]$Action = 'list'
 )
 
 $PSDefaultParameterValues['*:Encoding'] = 'UTF8'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
-# Check for powershell-yaml module
-if (-not (Get-Module -ListAvailable powershell-yaml)) {
+# Module powershell-yaml : installé seulement s'il est absent
+if (-not (Get-Module -ListAvailable -Name powershell-yaml)) {
     Write-Warning "Le module 'powershell-yaml' est requis. Installation..."
-    Install-Module powershell-yaml -Scope CurrentUser -Force -AllowClobber
+    try {
+        Install-Module powershell-yaml -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
+    }
+    catch {
+        Write-Host "❌ Impossible d'installer le module 'powershell-yaml' : $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "   Vérifiez votre connexion, puis installez-le : Install-Module powershell-yaml -Scope CurrentUser" -ForegroundColor Yellow
+        exit 1
+    }
 }
-Import-Module powershell-yaml
+try {
+    Import-Module powershell-yaml -ErrorAction Stop
+}
+catch {
+    Write-Host "❌ Impossible de charger le module 'powershell-yaml' : $($_.Exception.Message)" -ForegroundColor Red
+    exit 1
+}
+# -Ordered conserve l'ordre des clés du fichier (environment en map)
+if (-not (Get-Command ConvertFrom-Yaml).Parameters.ContainsKey('Ordered')) {
+    Write-Host "❌ Le module 'powershell-yaml' installé est trop ancien (option -Ordered absente)." -ForegroundColor Red
+    Write-Host "   Mettez-le à jour : Update-Module powershell-yaml" -ForegroundColor Yellow
+    exit 1
+}
 
 # Chemins
 $ProfilesDir = "profiles"
@@ -45,56 +64,87 @@ $TraefikDynamicFile = "traefik/dynamic.yml"
 $SecretsFile = "secrets.env"
 $ConfigFile = "config.yml"
 
+# Texte d'une valeur YAML tel que yq l'affiche dans manage-profiles.sh : booléens en
+# minuscules, chaîne vide pour une valeur absente ou null.
+function ConvertTo-YamlText {
+    param($Value)
 
+    if ($null -eq $Value) { return '' }
+    if ($Value -is [bool]) { return $Value.ToString().ToLowerInvariant() }
+    return [string]$Value
+}
 
-# Fonction pour charger les variables d'environnement partagées
-function Get-SharedEnvironmentVariables {
-    param(
-        [string]$ServiceName = $null
-    )
+# Texte d'un champ YAML, ou $Default s'il est absent, null ou vide : même règle que
+# value_or_default dans manage-profiles.sh. Les booléens se testent sur ce texte, comme en
+# Bash, et non sur la valeur PowerShell (où "false", yes ou off sont des chaînes non vides,
+# donc vraies) :
+#   (Get-YamlText $v 'true') -ceq 'true'    équivaut à   [ "$v" = "true" ]
+#   (Get-YamlText $v 'true') -cne 'false'   équivaut à   [ "$v" != "false" ]
+function Get-YamlText {
+    param($Value, [string]$Default = '')
 
-    if (-not (Test-Path $ConfigFile)) {
-        return @()
-    }
+    $text = ConvertTo-YamlText $Value
+    if ($text -eq '' -or $text -ceq 'null') { return $Default }
+    return $text
+}
+
+# Écrit un fichier généré en UTF-8 sans BOM, avec des fins de ligne LF uniquement
+# (les here-strings de ce script, enregistré en CRLF, contiennent des CRLF).
+function Write-GeneratedFile {
+    param([string]$Path, [string]$Content)
+
+    $text = ($Content -replace "`r", '').TrimEnd("`n") + "`n"
+    # Chemin absolu : les API .NET ignorent le dossier courant de PowerShell
+    $fullPath = Join-Path (Get-Location).Path $Path
+    [System.IO.File]::WriteAllText($fullPath, $text, (New-Object System.Text.UTF8Encoding $false))
+}
+
+# Charge config.yml ; table vide si le fichier est absent ou illisible
+function Read-Config {
+    if (-not (Test-Path $ConfigFile)) { return @{} }
 
     try {
-        $config = Get-Content $ConfigFile -Raw | ConvertFrom-Yaml
+        $config = Get-Content $ConfigFile -Raw | ConvertFrom-Yaml -Ordered
+        if ($config -is [System.Collections.IDictionary]) { return $config }
     }
     catch {
-        Write-Error "Erreur lors de la lecture de $ConfigFile : $_"
+        Write-Warning "Erreur lors de la lecture de $ConfigFile : $_"
+    }
+    return @{}
+}
+
+# Variables d'environnement partagées d'un service : les groupes auto_inject, puis les
+# groupes service_specific du service, chaque groupe une seule fois.
+# Rien si les variables partagées sont désactivées ou si le service est exclu.
+function Get-SharedEnvironmentVariables {
+    param(
+        $Config,
+        [string]$ServiceName
+    )
+
+    $sharedConfig = $Config.shared_env_config
+
+    # Activées par défaut : seul "false" les désactive, comme dans manage-profiles.sh
+    if ((Get-YamlText $sharedConfig.enabled 'true') -ceq 'false') {
         return @()
     }
 
-    if (-not $config.shared_env_config.enabled) {
+    if ($sharedConfig.exclude_services -ccontains $ServiceName) {
         return @()
+    }
+
+    $groups = @()
+    if ($sharedConfig.auto_inject) {
+        $groups += $sharedConfig.auto_inject
+    }
+    if ($sharedConfig.service_specific -and $sharedConfig.service_specific.$ServiceName) {
+        $groups += $sharedConfig.service_specific.$ServiceName
     }
 
     $sharedVars = @()
-
-    # Extraire les groupes auto_inject
-    $autoInjectGroups = @()
-    if ($config.shared_env_config.auto_inject) {
-        $autoInjectGroups = $config.shared_env_config.auto_inject
-    }
-
-    # Vérifier les exclusions
-    if ($ServiceName -and $config.shared_env_config.exclude_services -contains $ServiceName) {
-        return @()
-    }
-
-    # Extraire les groupes spécifiques au service
-    $serviceGroups = @()
-    if ($ServiceName -and $config.shared_env_config.service_specific -and $config.shared_env_config.service_specific.$ServiceName) {
-        $serviceGroups = $config.shared_env_config.service_specific.$ServiceName
-    }
-
-    # Combiner tous les groupes unique
-    $allGroups = ($autoInjectGroups + $serviceGroups) | Select-Object -Unique
-
-    # Extraire les variables
-    foreach ($group in $allGroups) {
-        if ($config.shared_env.$group) {
-            $sharedVars += $config.shared_env.$group
+    foreach ($group in ($groups | Select-Object -Unique)) {
+        if ($Config.shared_env.$group) {
+            $sharedVars += $Config.shared_env.$group
         }
     }
 
@@ -111,7 +161,8 @@ function Read-ProfileYaml {
     }
     
     try {
-        return Get-Content $Path -Raw | ConvertFrom-Yaml
+        # -Ordered : les clés gardent l'ordre du fichier, comme dans manage-profiles.sh
+        return Get-Content $Path -Raw | ConvertFrom-Yaml -Ordered
     }
     catch {
         Write-Error "Erreur de syntaxe YAML dans $Path : $_"
@@ -135,9 +186,9 @@ function Show-Profiles {
         $data = Read-ProfileYaml -Path $pro.FullName
         if (-not $data) { continue }
         
-        $name = if ($data.name) { $data.name } else { $pro.BaseName }
-        $enabled = if ($null -ne $data.enabled) { $data.enabled } else { $true }
-        $description = if ($data.description) { $data.description } else { "Sans description" }
+        $name = Get-YamlText $data.name $pro.BaseName
+        $enabled = (Get-YamlText $data.enabled 'true') -ceq 'true'
+        $description = Get-YamlText $data.description "Sans description"
         
         $status = if ($enabled) { "✅ Activé" } else { "❌ Désactivé" }
         $statusColor = if ($enabled) { "Green" } else { "Red" }
@@ -159,27 +210,33 @@ function Add-Profile {
     $name = Read-Host "`nNom du service (ex: api-backend, frontend)"
     if ([string]::IsNullOrWhiteSpace($name)) {
         Write-Error "Le nom est requis"
-        return
+        exit 1
     }
     
     # Nettoyer le nom
     $name = $name.ToLower() -replace '[^a-z0-9-]', '-'
-    $fileName = "$ProfilesDir\$name.yml"
+    $fileName = Join-Path $ProfilesDir "$name.yml"
     
     if (Test-Path $fileName) {
         Write-Error "Un profil '$name' existe déjà !"
-        return
+        exit 1
     }
     
     $description = Read-Host "Description du service"
+    $image = Read-Host "Image Docker (ex: nginx:latest, registry.io/myapp:v1.0)"
     $dockerPort = Read-Host "Port interne du conteneur (ex: 80, 8000)"
-    if ([string]::IsNullOrWhiteSpace($dockerPort)) { $dockerPort = "80" }
-
     $localPort = Read-Host "Port exposé localement (via Traefik host) (ex: 8001)"
+    if ([string]::IsNullOrWhiteSpace($dockerPort)) { $dockerPort = "80" }
     if ([string]::IsNullOrWhiteSpace($localPort)) { $localPort = $dockerPort }
 
-    $hostBinding = Read-Host "Port binding Docker (host:container) (Entrée pour utiliser ${localPort}:${dockerPort}, 'none' pour aucun)"
-    if ([string]::IsNullOrWhiteSpace($hostBinding)) { $hostBinding = "${localPort}:${dockerPort}" }
+    # Par défaut le service n'est joignable que via Traefik ; publier un port est optionnel
+    $hostBinding = Read-Host "Publier aussi un port sur l'hôte (hôte:conteneur, ex: 9000:${dockerPort}, Entrée pour aucun)"
+    $exposePorts = $false
+    $portsSection = ""
+    if (-not [string]::IsNullOrWhiteSpace($hostBinding) -and $hostBinding -ne 'none') {
+        $exposePorts = $true
+        $portsSection = "`n  ports:`n    - `"$hostBinding`""
+    }
     
     Write-Host "`n🔑 Activation du service" -ForegroundColor Yellow
     $alwaysActive = (Read-Host "Service toujours actif (démarré par défaut) ? (O/n)") -ne 'n'
@@ -254,12 +311,11 @@ description: "$description"
 enabled: true
 always_active: $($alwaysActive.ToString().ToLower())
 docker_profile: $dockerProfileValue
+expose_ports: $($exposePorts.ToString().ToLower())
 
 docker-compose:
   image: $image
-  container_name: $name
-  ports:
-    - "$hostBinding"
+  container_name: $name$portsSection
   environment:
 $allEnv
   healthcheck:
@@ -283,7 +339,10 @@ metadata:
     - $name
 "@
     
-    $profileContent | Out-File -FilePath $fileName -Encoding UTF8
+    if (-not (Test-Path $ProfilesDir)) {
+        New-Item -ItemType Directory -Path $ProfilesDir | Out-Null
+    }
+    Write-GeneratedFile -Path $fileName -Content $profileContent
     
     Write-Host "`n✅ Profil créé : $fileName" -ForegroundColor Green
     Write-Host "📝 Vous pouvez éditer ce fichier pour personnaliser davantage" -ForegroundColor Gray
@@ -291,6 +350,55 @@ metadata:
     # Proposer de regénérer docker-compose.yml
     if ((Read-Host "`nRegénérer docker-compose.yml maintenant ? (O/n)") -ne 'n') {
         Generate-DockerCompose
+    }
+}
+
+# Lie un port (syntaxe courte) à 127.0.0.1 s'il ne précise pas d'IP hôte.
+#   "8090:80" -> "127.0.0.1:8090:80"      "80" -> "127.0.0.1::80"
+# Syntaxe longue (target / published) : host_ip: 127.0.0.1 est ajouté s'il est absent.
+# Les ports avec IP explicite (ex: "0.0.0.0:8090:80", host_ip: 0.0.0.0) sont conservés.
+function ConvertTo-LocalhostPortBinding {
+    param($Port)
+
+    if ($Port -is [System.Collections.IDictionary]) {
+        if (-not $Port.Contains('host_ip')) { $Port['host_ip'] = '127.0.0.1' }
+        return $Port
+    }
+    if ($Port -isnot [string] -and $Port -isnot [ValueType]) { return $Port }
+
+    $spec = [string]$Port
+    # Compter les ':' en ignorant ceux des ${VAR:-defaut}
+    $outsideVars = $spec -replace '\$\{[^}]*\}', ''
+    $colons = ($outsideVars.ToCharArray() | Where-Object { $_ -eq ':' }).Count
+
+    switch ($colons) {
+        0 { return "127.0.0.1::$spec" }
+        1 { return "127.0.0.1:$spec" }
+        default { return $spec }
+    }
+}
+
+# Retourne les noms des volumes nommés d'une liste docker-compose.volumes. Un volume nommé
+# doit être déclaré dans la section volumes: de premier niveau, sinon docker compose refuse
+# le fichier. Mêmes règles que NAMED_VOLUMES_EXPR dans manage-profiles.sh :
+#   - syntaxe courte "nom:/chemin[:mode]" : la source est un nom de volume (au moins deux
+#     caractères, sinon Compose y voit une lettre de lecteur Windows), pas un chemin
+#     (./, /, ~, C:\) ni une variable (${VAR}) ;
+#   - syntaxe longue : type: volume avec une source.
+# Les montages de dossiers et les volumes anonymes ne sont pas retournés.
+function Get-NamedVolumeName {
+    param($Volumes)
+
+    if ($Volumes -is [string] -or $Volumes -is [System.Collections.IDictionary]) { return }
+
+    foreach ($volume in $Volumes) {
+        if ($volume -is [string]) {
+            if ($volume -cmatch '^([a-zA-Z0-9][a-zA-Z0-9_.-]+):') { $matches[1] }
+        }
+        elseif ($volume -is [System.Collections.IDictionary] -and $volume['type'] -ceq 'volume' -and
+            $volume['source'] -is [string] -and $volume['source'] -cmatch '^[a-zA-Z0-9][a-zA-Z0-9_.-]*$') {
+            $volume['source']
+        }
     }
 }
 
@@ -303,21 +411,22 @@ function Generate-DockerCompose {
     
     if ($profiles.Count -eq 0) {
         Write-Warning "Aucun profil trouvé"
-        return
+        exit 1
     }
-    
-    # Header
-    # Load Config from YAML (already validated in Get-SharedEnvironmentVariables)
-    $config = @{ namespace = 'default' }
-    if (Test-Path $ConfigFile) {
-        try {
-            $parsedConfig = Get-Content $ConfigFile -Raw | ConvertFrom-Yaml
-            if ($parsedConfig) { $config = $parsedConfig }
+
+    # Validation des profils avant génération
+    if (Test-Path ".\validate-profiles.ps1") {
+        Write-Host "`n🔍 Validation des profils..." -ForegroundColor Cyan
+        & .\validate-profiles.ps1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "`n❌ La validation a échoué. Corrigez les erreurs avant de générer." -ForegroundColor Red
+            exit 1
         }
-        catch {}
+        Write-Host ""
     }
-    
-    $namespace = if ($config.namespace) { $config.namespace } else { 'default' }
+
+    $config = Read-Config
+    $namespace = Get-YamlText $config.namespace 'devlocal'
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     
     $compose = @"
@@ -327,6 +436,21 @@ function Generate-DockerCompose {
 name: $namespace
 
 services:
+  # Proxy du socket Docker : seul conteneur qui monte le socket.
+  # Traefik et Dozzle passent par lui et n'ont accès qu'à des requêtes de lecture
+  # (conteneurs, événements, infos) ; aucune requête d'écriture n'est acceptée.
+  socket-proxy:
+    image: tecnativa/docker-socket-proxy:v0.5.0
+    container_name: "${namespace}_socket_proxy"
+    environment:
+      - CONTAINERS=1  # liste, logs et stats des conteneurs (Traefik, Dozzle)
+      - INFO=1        # requis par Dozzle pour se connecter
+      - POST=0        # refuse toute requête d'écriture
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - socket-proxy
+
   # Reverse Proxy Traefik
   traefik:
     image: traefik:v3.6.4
@@ -337,11 +461,13 @@ services:
     extra_hosts:
       - "external-ip:host-gateway"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
       - ./traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro
     networks:
       - traefik-network
+      - socket-proxy
+    depends_on:
+      - socket-proxy
     healthcheck:
       test: ["CMD", "traefik", "healthcheck"]
       interval: 10s
@@ -351,23 +477,26 @@ services:
 "@
     
     # Ajouter Dozzle si activé
-    if ($null -eq $config.dozzle_enabled -or $config.dozzle_enabled) {
-        $dozzlePort = if ($config.dozzle_port) { $config.dozzle_port } else { 9999 }
+    if ((Get-YamlText $config.dozzle_enabled 'true') -ceq 'true') {
+        $dozzlePort = Get-YamlText $config.dozzle_port '9999'
         $compose += @"
   # Monitoring des logs
   dozzle:
-    image: amir20/dozzle:latest
+    image: amir20/dozzle:v11.5.0
     container_name: "${namespace}_dozzle"
     ports:
       - "127.0.0.1:${dozzlePort}:8080"
     environment:
       - DOZZLE_TIMEOUT=15s
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - DOZZLE_BASE=/logs
+      - DOCKER_HOST=tcp://socket-proxy:2375
     extra_hosts:
       - "external-ip:host-gateway"
     networks:
       - traefik-network
+      - socket-proxy
+    depends_on:
+      - socket-proxy
     healthcheck:
       test: ["CMD", "/dozzle", "healthcheck"]
       interval: 3s
@@ -377,26 +506,28 @@ services:
     }
     
     # Ajouter chaque service
+    # Tri ordinal et sans doublon, comme "LC_ALL=C sort -u" dans manage-profiles.sh
+    $namedVolumes = [System.Collections.Generic.SortedSet[string]]::new([System.StringComparer]::Ordinal)
     foreach ($pro in $profiles) {
         $data = Read-ProfileYaml -Path $pro.FullName
         if (-not $data) { continue }
         
-        $enabled = if ($null -ne $data.enabled) { $data.enabled } else { $true }
-        
-        if (-not $enabled) {
+        if ((Get-YamlText $data.enabled 'true') -cne 'true') {
             Write-Host "  ⏭️  Ignoré (désactivé) : $($pro.BaseName)" -ForegroundColor DarkGray
             continue
         }
-        
+
         Write-Host "  ✅ Ajout : $($pro.BaseName)" -ForegroundColor Green
-        
-        $name = if ($data.name) { $data.name } else { $pro.BaseName }
-        $alwaysActive = if ($null -ne $data.always_active) { $data.always_active } else { $true }
-        $dockerProfile = if ($data.docker_profile) { $data.docker_profile } else { $null }
-        if ($dockerProfile -eq 'null') { $dockerProfile = $null }
-        
+
+        $name = Get-YamlText $data.name $pro.BaseName
+        # Sans always_active, le service dépend de son profil Docker (défaut : false)
+        $alwaysActive = (Get-YamlText $data.always_active 'false') -ceq 'true'
+        # Chaîne vide si docker_profile est absent ou null
+        $dockerProfile = Get-YamlText $data.docker_profile ''
+        $exposePorts = (Get-YamlText $data.expose_ports 'false') -ceq 'true'
+
         # Charger les variables partagées
-        $sharedEnvVars = Get-SharedEnvironmentVariables -ServiceName $name
+        $sharedEnvVars = @(Get-SharedEnvironmentVariables -Config $config -ServiceName $name)
         if ($sharedEnvVars.Count -gt 0) {
             Write-Host "    📌 $($sharedEnvVars.Count) variable(s) partagée(s)" -ForegroundColor DarkGray
         }
@@ -407,12 +538,32 @@ services:
             # Note: Si powershell-yaml retourne Hashtable/OrderedDictionary, .Clone() est shallow.
             # Mais comme on lit le fichier à chaque itération, c'est acceptable de modifier l'objet retourné.
             $composeData = $data.'docker-compose'
-            
-            # Retirer la section ports (gérée via Traefik)
+
+            foreach ($volumeName in (Get-NamedVolumeName -Volumes $composeData.volumes)) {
+                [void]$namedVolumes.Add($volumeName)
+            }
+
+            # Section ports : publiée sur 127.0.0.1 si expose_ports, retirée sinon (service via Traefik)
             if ($composeData.Contains('ports')) {
-                $composeData.Remove('ports')
+                if ($exposePorts) {
+                    $composeData.ports = @($composeData.ports | ForEach-Object { ConvertTo-LocalhostPortBinding -Port $_ })
+                }
+                else {
+                    $composeData.Remove('ports')
+                    Write-Host "    🔒 Ports non publiés (expose_ports: true pour les publier sur 127.0.0.1)" -ForegroundColor DarkGray
+                }
             }
             
+            # environment en map (CLE: valeur) : converti en liste CLE=valeur dans l'ordre du
+            # fichier, comme manage-profiles.sh, pour pouvoir y ajouter les variables partagées
+            if ($composeData.environment -is [System.Collections.IDictionary]) {
+                $composeData.environment = @($composeData.environment.GetEnumerator() |
+                        ForEach-Object { "$($_.Key)=$(ConvertTo-YamlText $_.Value)" })
+            }
+            elseif ($composeData.Contains('environment') -and $null -eq $composeData.environment) {
+                $composeData.Remove('environment')
+            }
+
             # Préparer l'injection des variables partagées sans polluer les données YAML (pas de faux entries)
             $hadEnvBefore = $false
             if ($composeData.Contains('environment') -and $composeData.environment) {
@@ -432,16 +583,20 @@ services:
                 $inserted = $false
                 for ($i = 0; $i -lt $yamlLines.Count; $i++) {
                     $line = $yamlLines[$i]
-                    $newYamlLines.Add($line)
 
-                    if (-not $inserted -and $line -match '^(\s*)environment:\s*$') {
-                        $envIndent = $matches[1]
-                        # Trouver indentation des items; sinon fallback à envIndent + deux espaces
+                    # "environment: []" est la clé vide créée plus haut pour un service sans variables
+                    # Clé de la section (non indentée), pas une clé environment imbriquée
+                    if (-not $inserted -and $line -match '^environment:\s*(\[\])?\s*$') {
+                        $envIndent = ''
+                        $newYamlLines.Add("environment:")
+
+                        # Reprendre l'indentation des items existants ; elle peut être vide,
+                        # car ConvertTo-Yaml aligne les items de liste sur leur clé
                         $itemIndent = $null
                         if ($i + 1 -lt $yamlLines.Count -and $yamlLines[$i + 1] -match '^(\s*)-\s') {
                             $itemIndent = $matches[1]
                         }
-                        if (-not $itemIndent) { $itemIndent = "$envIndent  " }
+                        if ($null -eq $itemIndent) { $itemIndent = "$envIndent  " }
 
                         # Insérer le bloc partagé puis un séparateur pour le service (si des vars existent côté service)
                         $newYamlLines.Add("$itemIndent# Variables partagées (depuis config.yml)")
@@ -454,6 +609,9 @@ services:
 
                         $inserted = $true
                     }
+                    else {
+                        $newYamlLines.Add($line)
+                    }
                 }
                 $yamlLines = $newYamlLines
             }
@@ -464,7 +622,7 @@ services:
             
             # Section profiles
             $profilesSection = ""
-            if (-not $alwaysActive -and $dockerProfile) {
+            if (-not $alwaysActive -and $dockerProfile -ne '') {
                 $profilesSection = @"
 
     profiles:
@@ -491,9 +649,19 @@ $dockerComposeContent
 networks:
   traefik-network:
     driver: bridge
+  # Réseau interne réservé à socket-proxy, Traefik et Dozzle :
+  # les services des profils ne peuvent pas joindre l'API Docker
+  socket-proxy:
+    driver: bridge
+    internal: true
 "@
-    
-    $compose | Out-File -FilePath $DockerComposeFile -Encoding UTF8
+
+    # Volumes nommés utilisés par les profils activés
+    if ($namedVolumes.Count -gt 0) {
+        $compose += "`n`nvolumes:`n" + (($namedVolumes | ForEach-Object { "  ${_}:" }) -join "`n")
+    }
+
+    Write-GeneratedFile -Path $DockerComposeFile -Content $compose
     Write-Host "`n✅ docker-compose.yml généré" -ForegroundColor Green
     
     # Générer aussi la config Traefik dynamique
@@ -518,28 +686,19 @@ function Generate-TraefikDynamic {
         $data = Read-ProfileYaml -Path $pro.FullName
         if (-not $data) { continue }
         
-        $enabled = if ($null -ne $data.enabled) { $data.enabled } else { $true }
-        
-        # Check traefik.enabled
-        $traefikEnabled = $false
-        if ($data.traefik -and ($null -ne $data.traefik.enabled)) {
-            $traefikEnabled = $data.traefik.enabled
-        }
-        
+        $enabled = (Get-YamlText $data.enabled 'true') -ceq 'true'
+        $traefikEnabled = (Get-YamlText $data.traefik.enabled 'false') -ceq 'true'
         if (-not ($enabled -and $traefikEnabled)) { continue }
-        
-        $name = if ($data.name) { $data.name } else { $pro.BaseName }
-        
-        # Extract ports with fallbacks
-        $localPort = if ($data.traefik.local_port) { $data.traefik.local_port } else { '80' }
-        $dockerPort = if ($data.traefik.docker_port) { $data.traefik.docker_port } else { '80' }
-        
-        # Traefik configuration
-        $prefix = if ($data.traefik.prefix) { $data.traefik.prefix } else { "/$name" }
-        $stripPrefix = if ($null -ne $data.traefik.strip_prefix) { $data.traefik.strip_prefix } else { $false }
-        $healthPath = if ($data.traefik.health_path) { $data.traefik.health_path } else { '/health' }
-        $priority = if ($data.traefik.priority) { $data.traefik.priority } else { 10 }
-        
+
+        # Seule une valeur absente ou vide prend la valeur par défaut : 0 est conservé
+        $name = Get-YamlText $data.name $pro.BaseName
+        $localPort = Get-YamlText $data.traefik.local_port '80'
+        $dockerPort = Get-YamlText $data.traefik.docker_port '80'
+        $healthPath = Get-YamlText $data.traefik.health_path '/health'
+        $prefix = Get-YamlText $data.traefik.prefix "/$name"
+        $stripPrefix = (Get-YamlText $data.traefik.strip_prefix 'false') -ceq 'true'
+        $priority = Get-YamlText $data.traefik.priority '10'
+
         # --- Router ---
         $middlewareList = ""
         if ($stripPrefix) {
@@ -602,16 +761,7 @@ $middlewareList
 http:
 "@
 
-    # Load config to check if Dozzle is enabled
-    $configData = @{ dozzle_enabled = $true; dozzle_port = 9999 }
-    if (Test-Path $ConfigFile) {
-        try {
-            $parsedConfig = Get-Content $ConfigFile -Raw | ConvertFrom-Yaml
-            if ($parsedConfig) { $configData = $parsedConfig }
-        }
-        catch {}
-    }
-    $dozzleEnabled = if ($null -eq $configData.dozzle_enabled) { $true } else { $configData.dozzle_enabled }
+    $dozzleEnabled = (Get-YamlText (Read-Config).dozzle_enabled 'true') -ceq 'true'
 
     # Build the dynamic configuration
     if ($routersStr.Trim().Length -gt 0 -or $dozzleEnabled) {
@@ -625,6 +775,11 @@ http:
       priority: 10
 "@
         }
+    }
+
+    # Middlewares section (définitions référencées par les routers avec strip_prefix)
+    if ($middlewaresStr.Trim().Length -gt 0) {
+        $dynamic += "`n`n  middlewares:$middlewaresStr"
     }
 
     # Services section
@@ -646,8 +801,105 @@ http:
         }
     }
     
-    $dynamic | Out-File -FilePath $TraefikDynamicFile -Encoding UTF8
+    Write-GeneratedFile -Path $TraefikDynamicFile -Content $dynamic
     Write-Host "✅ traefik/dynamic.yml généré" -ForegroundColor Green
+}
+
+# Chiffre un contenu dotenv avec SOPS et retourne le texte chiffré ($null en cas d'échec).
+# -TargetFile fait appliquer à SOPS les règles .sops.yaml du fichier final.
+# Hors Windows, le contenu passe par l'entrée standard, comme dans manage-profiles.sh : rien
+# n'est écrit en clair sur disque. Sous Windows (pas de /dev/stdin), il passe par un fichier
+# temporaire privé, hors du dépôt, toujours supprimé.
+function Protect-SecretsContent {
+    param(
+        [string]$Content,
+        [string]$TargetFile
+    )
+
+    if ([System.Environment]::OSVersion.Platform -ne [System.PlatformID]::Win32NT) {
+        # PowerShell ajoute un saut de ligne au texte envoyé à une commande : retirer le dernier
+        $encrypted = ($Content -replace "`n$", '') |
+            & sops -e --filename-override $TargetFile --input-type dotenv --output-type dotenv /dev/stdin
+        if ($LASTEXITCODE -ne 0) { return $null }
+        return ($encrypted -join "`n")
+    }
+
+    $tempFile = [System.IO.Path]::GetTempFileName()
+    try {
+        [System.IO.File]::WriteAllText($tempFile, $Content, (New-Object System.Text.UTF8Encoding $false))
+        $encrypted = & sops -e --filename-override $TargetFile --input-type dotenv --output-type dotenv $tempFile
+        if ($LASTEXITCODE -ne 0) { return $null }
+        return ($encrypted -join "`n")
+    }
+    finally {
+        Remove-Item $tempFile -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# Détecte les variables de secrets des profils activés, sans SOPS ni déchiffrement.
+# Retourne une table nom -> valeur par défaut.
+function Get-SecretVariables {
+    $profiles = Get-ChildItem -Path $ProfilesDir -Filter "*.yml" -ErrorAction SilentlyContinue
+    # Table sensible à la casse, comme le tableau associatif de manage-profiles.sh
+    $secretVars = [hashtable]::new()
+    
+    foreach ($pro in $profiles) {
+        $data = Read-ProfileYaml -Path $pro.FullName
+        if (-not $data) { continue }
+        
+        if ((Get-YamlText $data.enabled 'true') -cne 'true') { continue }
+
+        $profileName = Get-YamlText $data.name $pro.BaseName
+
+        # Méthode 1 : section secrets: (même vide, elle désactive l'auto-détection)
+        if ($data.Keys -ccontains 'secrets') {
+            foreach ($secret in $data.secrets) {
+                $secretName = ConvertTo-YamlText $secret.name
+                if ($secretName -eq '') { continue }
+
+                $secretDesc = ConvertTo-YamlText $secret.description
+                # Une valeur par défaut présente est conservée telle quelle, même 0, false
+                # ou "" ; absente ou null : "changeme" (comme manage-profiles.sh)
+                $secretDefault = if ($null -ne $secret.default) { ConvertTo-YamlText $secret.default } else { 'changeme' }
+
+                if (-not $secretVars.ContainsKey($secretName)) {
+                    $secretVars[$secretName] = $secretDefault
+                    Write-Host "  📌 [$profileName] $secretName ($secretDesc)" -ForegroundColor Gray
+                }
+            }
+        }
+        else {
+            # Méthode 2 (fallback, profil sans section secrets:) : variables ${VAR:-defaut}
+            # des entrées de docker-compose.environment uniquement (liste ou map).
+            # L'image, les ports et les commentaires ne sont pas des secrets.
+            # Même motif que manage-profiles.sh : sensible à la casse, ":-" obligatoire
+            # (un ${VAR} nu n'est pas un secret), toutes les occurrences d'une entrée.
+            $environment = $data.'docker-compose'.environment
+            $envValues = if ($environment -is [System.Collections.IDictionary]) { $environment.Values } else { $environment }
+            foreach ($envValue in $envValues) {
+                foreach ($found in [regex]::Matches([string]$envValue, '\$\{([A-Z_][A-Z0-9_]*):-([^}\n]*)\}')) {
+                    $varName = $found.Groups[1].Value
+                    $defaultValue = if ($found.Groups[2].Value) { $found.Groups[2].Value } else { 'changeme' }
+
+                    if (-not $secretVars.ContainsKey($varName)) {
+                        $secretVars[$varName] = $defaultValue
+                        Write-Host "  📌 [$profileName] $varName (auto-détecté)" -ForegroundColor DarkGray
+                    }
+                }
+            }
+        }
+    }
+
+    return $secretVars
+}
+
+# Affiche les noms des variables de secrets détectées, triés, un par ligne
+function Show-SecretVariables {
+    # 6>$null : masque les messages de détection (Write-Host)
+    $secretVars = Get-SecretVariables 6>$null
+    [string[]]$names = @($secretVars.Keys)
+    [Array]::Sort($names, [StringComparer]::Ordinal)
+    $names
 }
 
 # Fonction pour synchroniser secrets.env avec les profils
@@ -659,13 +911,13 @@ function Sync-Secrets {
     if (-not (Get-Command sops -ErrorAction SilentlyContinue)) {
         Write-Error "SOPS n'est pas installé. Cette fonctionnalité nécessite SOPS."
         Write-Host "`n  💡 Installez SOPS : https://github.com/mozilla/sops/releases" -ForegroundColor Yellow
-        return
+        exit 1
     }
     
     # Vérifier la configuration SOPS
     if (-not (Test-Path ".sops.yaml")) {
         Write-Error "Fichier .sops.yaml introuvable. Configurez SOPS d'abord."
-        return
+        exit 1
     }
     
     $sopsConfig = Get-Content ".sops.yaml" -Raw
@@ -676,64 +928,12 @@ function Sync-Secrets {
         Write-Host "     - Age : age: 'age1...'" -ForegroundColor Gray
         Write-Host "`n  Pour générer une clé Age :" -ForegroundColor Yellow
         Write-Host "     age-keygen -o age-key.txt" -ForegroundColor Gray
-        return
+        exit 1
     }
     
-    # Récupérer toutes les variables ${VAR:-default} des profils
-    $profiles = Get-ChildItem -Path $ProfilesDir -Filter "*.yml" -ErrorAction SilentlyContinue
-    $secretVars = @{}
-    
-    foreach ($pro in $profiles) {
-        $data = Read-ProfileYaml -Path $pro.FullName
-        if (-not $data) { continue }
-        
-        $enabled = if ($null -ne $data.enabled) { $data.enabled } else { $true }
-        if (-not $enabled) { continue }
-        
-        $profileName = if ($data.name) { $data.name } else { $pro.BaseName }
-        
-        # Méthode 1 : Lire la section secrets: si elle existe
-        if ($data.secrets) {
-            foreach ($secret in $data.secrets) {
-                if ($secret.name) {
-                    $secretName = $secret.name
-                    $secretDesc = if ($secret.description) { $secret.description } else { '' }
-                    $secretDefault = if ($secret.default) { $secret.default } else { 'changeme' }
-                    
-                    if (-not $secretVars.ContainsKey($secretName)) {
-                        $secretVars[$secretName] = $secretDefault
-                        Write-Host "  📌 [$profileName] $secretName = $secretDefault ($secretDesc)" -ForegroundColor Gray
-                    }
-                }
-            }
-        }
-        else {
-            # Méthode 2 (fallback) : Scanner les ${VAR:-default} dans environment:
-            # Pour cela, on a besoin du contenu brut ou d'inspecter les valeurs de l'objet environment
-            # L'approche Regex est plus simple pour trouver tous les patterns ${...} dans le fichier,
-            # indépendamment de la structure. Mais essayons de le faire via l'objet pour environment.
-            
-            if ($data.'docker-compose' -and $data.'docker-compose'.environment) {
-                $env = $data.'docker-compose'.environment
-                # environment peut être une liste ou un hashtable (si converti de object)
-                # YAML environment est souvent une liste de strings "KEY=VALUE"
-                # environment peut être une liste ou un hashtable
-                # S'il contient des strings simples "KEY=VALUE", on cherche le pattern
-                foreach ($envLine in $env) {
-                    if ($envLine -match '\$\{([A-Z_][A-Z0-9_]*)(:-([^}]*))?\}') {
-                        $varName = $matches[1]
-                        $defaultValue = if ($matches[3]) { $matches[3] } else { 'changeme' }
-                        
-                        if (-not $secretVars.ContainsKey($varName)) {
-                            $secretVars[$varName] = $defaultValue
-                            Write-Host "  📌 [$profileName] $varName = $defaultValue (auto-détecté)" -ForegroundColor DarkGray
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
+    # Récupérer toutes les variables de secrets des profils
+    $secretVars = Get-SecretVariables
+
     if ($secretVars.Count -eq 0) {
         Write-Host "  ℹ️  Aucune variable de secrets trouvée dans les profils" -ForegroundColor Yellow
         return
@@ -742,33 +942,39 @@ function Sync-Secrets {
     Write-Host "`n  Total: $($secretVars.Count) variable(s) trouvée(s)" -ForegroundColor Cyan
     
     # Lire le fichier secrets.env existant (déchiffré)
-    $existingSecrets = @{}
+    # Table sensible à la casse, comme le tableau associatif de manage-profiles.sh
+    $existingSecrets = [hashtable]::new()
     $secretsContent = ""
-    
+
     if (Test-Path $SecretsFile) {
+        # Ne pas continuer si le déchiffrement échoue, quelle qu'en soit la forme (code de
+        # sortie ou exception) : le fichier existant serait écrasé
+        $decryptedLines = $null
+        $decryptionSucceeded = $false
         try {
-            # Déchiffrer et lire
-            $decrypted = sops -d $SecretsFile 2>&1
-            if ($LASTEXITCODE -eq 0) {
-                $secretsContent = $decrypted
-                foreach ($line in $decrypted -split "`n") {
-                    if ($line -match '^([A-Z_][A-Z0-9_]*)=(.*)$') {
-                        $existingSecrets[$matches[1]] = $matches[2]
-                    }
-                }
-                Write-Host "`n  ✅ Fichier secrets.env déchiffré ($($existingSecrets.Count) variables existantes)" -ForegroundColor Green
-            }
-            else {
-                Write-Warning "Impossible de déchiffrer secrets.env. Création d'un nouveau fichier."
-            }
+            $decryptedLines = & sops -d $SecretsFile
+            $decryptionSucceeded = ($LASTEXITCODE -eq 0)
         }
         catch {
-            Write-Warning "Erreur lors de la lecture de secrets.env: $_"
+            Write-Warning "Erreur lors du déchiffrement de ${SecretsFile} : $($_.Exception.Message)"
         }
+        if (-not $decryptionSucceeded) {
+            Write-Error "Impossible de déchiffrer $SecretsFile - aucune modification effectuée. Vérifiez votre clé SOPS, ou supprimez le fichier pour repartir de zéro."
+            exit 1
+        }
+
+        # Contenu conservé tel quel (lignes vides comprises), sans les sauts de ligne finaux
+        $secretsContent = (@($decryptedLines) -join "`n").TrimEnd("`n")
+        foreach ($line in $secretsContent -split "`n") {
+            if ($line -cmatch '^([A-Z_][A-Z0-9_]*)(=|$)') {
+                $existingSecrets[$matches[1]] = $true
+            }
+        }
+        Write-Host "`n  ✅ Fichier secrets.env déchiffré ($($existingSecrets.Count) variables existantes)" -ForegroundColor Green
     }
-    
+
     # Identifier les nouvelles variables à ajouter
-    $newVars = @{}
+    $newVars = [hashtable]::new()
     foreach ($var in $secretVars.Keys) {
         if (-not $existingSecrets.ContainsKey($var)) {
             $newVars[$var] = $secretVars[$var]
@@ -782,7 +988,7 @@ function Sync-Secrets {
     
     Write-Host "`n  📝 Variables manquantes à ajouter:" -ForegroundColor Yellow
     foreach ($var in $newVars.Keys) {
-        Write-Host "     - $var=$($newVars[$var])" -ForegroundColor Gray
+        Write-Host "     - $var" -ForegroundColor Gray
     }
     
     # Demander confirmation
@@ -793,66 +999,26 @@ function Sync-Secrets {
         return
     }
     
-    # Construire le nouveau contenu
-    $lines = @()
+    # Construire le nouveau contenu : l'existant, une ligne vide, puis les nouvelles variables
+    $newContent = ""
     if ($secretsContent) {
-        $lines += $secretsContent -split "`n" | Where-Object { $_.Trim() -ne '' }
+        $newContent = "$secretsContent`n"
     }
-    
-    $lines += ""
-    $lines += "# Variables ajoutées automatiquement le $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
-    foreach ($var in $newVars.Keys | Sort-Object) {
-        $lines += "$var=$($newVars[$var])"
+    $newContent += "`n# Variables ajoutées automatiquement le $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')`n"
+    [string[]]$newNames = @($newVars.Keys)
+    [Array]::Sort($newNames, [StringComparer]::Ordinal)
+    foreach ($var in $newNames) {
+        $newContent += "$var=$($newVars[$var])`n"
     }
-    
-    $newContent = $lines -join "`n"
-    
-    # Sauvegarder temporairement en clair
-    $tempFile = "$SecretsFile.tmp"
-    $newContent | Out-File -FilePath $tempFile -Encoding UTF8 -NoNewline
-    
-    # Chiffrer avec SOPS
-    # Note: On passe --filename-override secrets.env pour que SOPS applique les règles de .sops.yaml
-    Write-Host "Chiffrement du fichier temporaire..." -ForegroundColor Cyan
-    try {
-        # PowerShell redirection handling for external commands can be tricky with binary data
-        # Best way is to let sops handle file output if possible, but sops outputs to stdout by default for encryption
-        
-        $sopsArgs = @("-e", "--filename-override", $SecretsFile, $tempFile)
-        
-        # Capture stdout (encrypted content) and stderr
-        $pinfo = New-Object System.Diagnostics.ProcessStartInfo
-        $pinfo.FileName = "sops"
-        $pinfo.Arguments = $sopsArgs -join " "
-        $pinfo.RedirectStandardOutput = $true
-        $pinfo.RedirectStandardError = $true
-        $pinfo.UseShellExecute = $false
-        $pinfo.StandardOutputEncoding = [System.Text.Encoding]::UTF8
-        
-        $p = New-Object System.Diagnostics.Process
-        $p.StartInfo = $pinfo
-        $p.Start() | Out-Null
-        
-        $stdout = $p.StandardOutput.ReadToEnd()
-        $stderr = $p.StandardError.ReadToEnd()
-        $p.WaitForExit()
-        
-        if ($p.ExitCode -eq 0) {
-            $stdout | Out-File -FilePath $SecretsFile -Encoding UTF8 -NoNewline
-            Remove-Item $tempFile -Force
-            Write-Host "`n  ✅ secrets.env mis à jour et rechiffré ($($newVars.Count) variable(s) ajoutée(s))" -ForegroundColor Green
-        }
-        else {
-            Write-Error "Erreur SOPS (Exit code $($p.ExitCode)): $stderr"
-            if (Test-Path $tempFile) { Remove-Item $tempFile -Force }
-        }
+
+    $encrypted = Protect-SecretsContent -Content $newContent -TargetFile $SecretsFile
+    if ($null -eq $encrypted) {
+        Write-Error "Erreur lors du chiffrement - $SecretsFile n'a pas été modifié"
+        exit 1
     }
-    catch {
-        Write-Error "Erreur lors du chiffrement: $_"
-        if (Test-Path $tempFile) {
-            Remove-Item $tempFile -Force
-        }
-    }
+
+    Write-GeneratedFile -Path $SecretsFile -Content $encrypted
+    Write-Host "`n  ✅ secrets.env mis à jour et rechiffré ($($newVars.Count) variable(s) ajoutée(s))" -ForegroundColor Green
 }
 
 # Fonction pour initialiser secrets.env
@@ -870,12 +1036,12 @@ function Initialize-Secrets {
     # Vérifier SOPS
     if (-not (Get-Command sops -ErrorAction SilentlyContinue)) {
         Write-Error "SOPS n'est pas installé. Installez-le d'abord."
-        return
+        exit 1
     }
     
     if (-not (Test-Path ".sops.yaml")) {
         Write-Error "Fichier .sops.yaml introuvable. Configurez SOPS d'abord (voir docs/sops_age_guide.md)."
-        return
+        exit 1
     }
 
     # Copier l'exemple
@@ -891,7 +1057,7 @@ function Initialize-Secrets {
     if ($LASTEXITCODE -ne 0) {
         Remove-Item $SecretsFile -Force -ErrorAction SilentlyContinue
         Write-Error "Échec du chiffrement SOPS - $SecretsFile supprimé. Vérifiez .sops.yaml."
-        return
+        exit 1
     }
 
     Write-Host "`n✅ Fichier $SecretsFile créé et chiffré" -ForegroundColor Green
@@ -902,12 +1068,22 @@ function Initialize-Secrets {
     }
 }
 
-# Main
-switch ($Action) {
-    'add' { Add-Profile }
-    'list' { Show-Profiles }
-    'generate' { Generate-DockerCompose }
-    'init-secrets' { Initialize-Secrets }
-    'sync-secrets' { Sync-Secrets }
-    default { Show-Profiles }
+# Main : exécuté depuis le dossier du script, comme manage-profiles.sh. Le dossier courant de
+# l'appelant est restauré sur toutes les sorties, y compris exit dans une fonction : menu.ps1
+# et launch.ps1 appellent ce script avec & dans leur propre session.
+Push-Location -LiteralPath $PSScriptRoot
+try {
+    switch ($Action) {
+        'add' { Add-Profile }
+        'list' { Show-Profiles }
+        'generate' { Generate-DockerCompose }
+        'init-secrets' { Initialize-Secrets }
+        'sync-secrets' { Sync-Secrets }
+        'list-secrets' { Show-SecretVariables }
+        default { Show-Profiles }
+    }
 }
+finally {
+    Pop-Location
+}
+exit 0

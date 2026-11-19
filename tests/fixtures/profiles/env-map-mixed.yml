@@ -1,0 +1,21 @@
+# Environnement en map : clés en minuscules ou avec chiffres, ordre du fichier conservé
+# (non alphabétique), booléens écrits en minuscules
+name: env-map-mixed
+description: "Map d'environnement variée"
+enabled: true
+always_active: true
+docker_profile: null
+
+docker-compose:
+  image: nginx:alpine
+  container_name: env-map-mixed
+  environment:
+    ZONE: last-letter-first
+    node_env: dev
+    S3_BUCKET: assets
+    DEBUG: true
+    VERBOSE: false
+    APP_PORT: 8080
+
+traefik:
+  enabled: false

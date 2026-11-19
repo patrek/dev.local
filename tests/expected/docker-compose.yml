@@ -1,0 +1,405 @@
+# Généré automatiquement par manage-profiles.sh
+# NE PAS ÉDITER MANUELLEMENT - Vos modifications seront écrasées
+name: testns
+
+services:
+  # Proxy du socket Docker : seul conteneur qui monte le socket.
+  # Traefik et Dozzle passent par lui et n'ont accès qu'à des requêtes de lecture
+  # (conteneurs, événements, infos) ; aucune requête d'écriture n'est acceptée.
+  socket-proxy:
+    image: tecnativa/docker-socket-proxy:v0.5.0
+    container_name: testns_socket_proxy
+    environment:
+      - CONTAINERS=1  # liste, logs et stats des conteneurs (Traefik, Dozzle)
+      - INFO=1        # requis par Dozzle pour se connecter
+      - POST=0        # refuse toute requête d'écriture
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - socket-proxy
+
+  # Reverse Proxy Traefik
+  traefik:
+    image: traefik:v3.6.4
+    container_name: testns_traefik
+    ports:
+      - "127.0.0.1:8080:80"
+      - "127.0.0.1:8081:8080"
+    extra_hosts:
+      - "external-ip:host-gateway"
+    volumes:
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro
+    networks:
+      - traefik-network
+      - socket-proxy
+    depends_on:
+      - socket-proxy
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Monitoring des logs
+  dozzle:
+    image: amir20/dozzle:v11.5.0
+    container_name: testns_dozzle
+    ports:
+      - "127.0.0.1:9999:8080"
+    environment:
+      - DOZZLE_TIMEOUT=15s
+      - DOZZLE_BASE=/logs
+      - DOCKER_HOST=tcp://socket-proxy:2375
+    extra_hosts:
+      - "external-ip:host-gateway"
+    networks:
+      - traefik-network
+      - socket-proxy
+    depends_on:
+      - socket-proxy
+    healthcheck:
+      test: ["CMD", "/dozzle", "healthcheck"]
+      interval: 3s
+      timeout: 30s
+
+  # Service: api
+  api:
+    image: ${API_IMAGE:-nginx}:${API_TAG:-alpine}
+    container_name: api
+    environment:
+      # Variables partagées (depuis config.yml)
+      - LOG_LEVEL=info
+      - TZ=America/Toronto
+      - API_GATEWAY_URL=https://api.example.com
+      - API_ONLY_VAR=api-only-value
+      # Variables exclusives du service
+      - SERVICE_NAME=api
+      - API_KEY=${API_KEY:-changeme}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/"]
+      interval: 30s
+    extra_hosts:
+      - "external-ip:host-gateway"
+    networks:
+      - traefik-network
+
+  # Service: env-hash
+  env-hash:
+    image: nginx:alpine
+    container_name: env-hash
+    environment:
+      # Variables partagées (depuis config.yml)
+      - LOG_LEVEL=info
+      - TZ=America/Toronto
+      - API_GATEWAY_URL=https://api.example.com
+      # Variables exclusives du service
+      - "HASH_MESSAGE=hello #world"
+      - HASH_PLAIN=value
+    extra_hosts:
+      - "external-ip:host-gateway"
+    networks:
+      - traefik-network
+
+  # Service: env-map-mixed
+  env-map-mixed:
+    image: nginx:alpine
+    container_name: env-map-mixed
+    environment:
+      # Variables partagées (depuis config.yml)
+      - LOG_LEVEL=info
+      - TZ=America/Toronto
+      - API_GATEWAY_URL=https://api.example.com
+      # Variables exclusives du service
+      - ZONE=last-letter-first
+      - node_env=dev
+      - S3_BUCKET=assets
+      - DEBUG=true
+      - VERBOSE=false
+      - APP_PORT=8080
+    extra_hosts:
+      - "external-ip:host-gateway"
+    networks:
+      - traefik-network
+
+  # Service: excluded
+  excluded:
+    image: nginx:alpine
+    container_name: excluded
+    extra_hosts:
+      - "external-ip:host-gateway"
+    networks:
+      - traefik-network
+
+  # Service: indent4-exposed
+  indent4-exposed:
+    image: nginx:alpine
+    container_name: indent4-exposed
+    ports:
+      - "127.0.0.1:8024:80"
+    environment:
+      # Variables partagées (depuis config.yml)
+      - LOG_LEVEL=info
+      - TZ=America/Toronto
+      - API_GATEWAY_URL=https://api.example.com
+    extra_hosts:
+      - "external-ip:host-gateway"
+    networks:
+      - traefik-network
+
+  # Service: indent4
+  indent4:
+    image: nginx:alpine
+    container_name: indent4
+    environment:
+      # Variables partagées (depuis config.yml)
+      - LOG_LEVEL=info
+      - TZ=America/Toronto
+      - API_GATEWAY_URL=https://api.example.com
+      # Variables exclusives du service
+      - INDENT_MODE=four
+    healthcheck:
+      test: ["CMD", "true"]
+      interval: 30s
+    extra_hosts:
+      - "external-ip:host-gateway"
+    networks:
+      - traefik-network
+
+  # Service: no-always-active
+  no-always-active:
+    image: nginx:alpine
+    container_name: no-always-active
+    environment:
+      # Variables partagées (depuis config.yml)
+      - LOG_LEVEL=info
+      - TZ=America/Toronto
+      - API_GATEWAY_URL=https://api.example.com
+    extra_hosts:
+      - "external-ip:host-gateway"
+    networks:
+      - traefik-network
+    profiles:
+      - optional
+
+  # Service: plain
+  plain:
+    image: nginx:alpine
+    container_name: plain
+    environment:
+      # Variables partagées (depuis config.yml)
+      - LOG_LEVEL=info
+      - TZ=America/Toronto
+      - API_GATEWAY_URL=https://api.example.com
+    extra_hosts:
+      - "external-ip:host-gateway"
+    networks:
+      - traefik-network
+
+  # Service: ports-flow-hidden
+  ports-flow-hidden:
+    image: nginx:alpine
+    container_name: ports-flow-hidden
+    environment:
+      # Variables partagées (depuis config.yml)
+      - LOG_LEVEL=info
+      - TZ=America/Toronto
+      - API_GATEWAY_URL=https://api.example.com
+    extra_hosts:
+      - "external-ip:host-gateway"
+    networks:
+      - traefik-network
+
+  # Service: ports-flow
+  ports-flow:
+    image: nginx:alpine
+    container_name: ports-flow
+    ports:
+      - "127.0.0.1:8020:80"
+      - '127.0.0.1:${FLOW_ALT_PORT:-8021}:81'
+    environment:
+      # Variables partagées (depuis config.yml)
+      - LOG_LEVEL=info
+      - TZ=America/Toronto
+      - API_GATEWAY_URL=https://api.example.com
+      # Variables exclusives du service
+      - FLOW_MODE=test
+      - "FLOW_LABEL=en flux"
+    extra_hosts:
+      - "external-ip:host-gateway"
+    networks:
+      - traefik-network
+
+  # Service: ports-long-hidden
+  ports-long-hidden:
+    image: nginx:alpine
+    container_name: ports-long-hidden
+    environment:
+      # Variables partagées (depuis config.yml)
+      - LOG_LEVEL=info
+      - TZ=America/Toronto
+      - API_GATEWAY_URL=https://api.example.com
+    extra_hosts:
+      - "external-ip:host-gateway"
+    networks:
+      - traefik-network
+
+  # Service: ports-long
+  ports-long:
+    image: nginx:alpine
+    container_name: ports-long
+    ports:
+      - target: 80
+        published: 8030
+        host_ip: 127.0.0.1
+      - target: 81
+        published: "${LONG_ALT_PORT:-8031}"
+        protocol: tcp
+        mode: host
+        host_ip: 127.0.0.1
+      - target: 82
+        published: 8032
+        host_ip: 127.0.0.1
+      - "127.0.0.1:8033:83"
+    environment:
+      # Variables partagées (depuis config.yml)
+      - LOG_LEVEL=info
+      - TZ=America/Toronto
+      - API_GATEWAY_URL=https://api.example.com
+    extra_hosts:
+      - "external-ip:host-gateway"
+    networks:
+      - traefik-network
+
+  # Service: secrets-auto
+  secrets-auto:
+    image: nginx:${AUTO_IMAGE_TAG:-alpine}
+    container_name: secrets-auto
+    environment:
+      # Variables partagées (depuis config.yml)
+      - LOG_LEVEL=info
+      - TZ=America/Toronto
+      - API_GATEWAY_URL=https://api.example.com
+      # Variables exclusives du service
+      - AUTO_TOKEN=${AUTO_TOKEN:-changeme}
+      - AUTO_BARE=${AUTO_BARE}
+      - AUTO_URL=https://${AUTO_USER:-user}:${AUTO_PASSWORD:-}@example.com
+      - AUTO_LOWER=${auto_lower:-ignore}
+    extra_hosts:
+      - "external-ip:host-gateway"
+    networks:
+      - traefik-network
+
+  # Service: secrets-empty
+  secrets-empty:
+    image: nginx:alpine
+    container_name: secrets-empty
+    environment:
+      # Variables partagées (depuis config.yml)
+      - LOG_LEVEL=info
+      - TZ=America/Toronto
+      - API_GATEWAY_URL=https://api.example.com
+      # Variables exclusives du service
+      - EMPTY_SECTION=${EMPTY_SECTION:-ignore}
+    extra_hosts:
+      - "external-ip:host-gateway"
+    networks:
+      - traefik-network
+
+  # Service: secrets-explicit
+  secrets-explicit:
+    image: nginx:alpine
+    container_name: secrets-explicit
+    environment:
+      # Variables partagées (depuis config.yml)
+      - LOG_LEVEL=info
+      - TZ=America/Toronto
+      - API_GATEWAY_URL=https://api.example.com
+      # Variables exclusives du service
+      - EXPLICIT_FIRST=${EXPLICIT_FIRST:-changeme}
+      - EXPLICIT_UNDECLARED=${EXPLICIT_UNDECLARED:-ignore}
+    extra_hosts:
+      - "external-ip:host-gateway"
+    networks:
+      - traefik-network
+
+  # Service: secrets-map
+  secrets-map:
+    image: nginx:alpine
+    container_name: secrets-map
+    environment:
+      # Variables partagées (depuis config.yml)
+      - LOG_LEVEL=info
+      - TZ=America/Toronto
+      - API_GATEWAY_URL=https://api.example.com
+      # Variables exclusives du service
+      - MAP_TOKEN=${MAP_TOKEN:-changeme}
+      - MAP_BARE=${MAP_BARE}
+      - MAP_PLAIN=value
+    extra_hosts:
+      - "external-ip:host-gateway"
+    networks:
+      - traefik-network
+
+  # Service: storage
+  storage:
+    image: nginx:alpine
+    container_name: storage
+    volumes:
+      - node_modules:/app/node_modules
+      - "node_modules:/opt/node_modules:ro"
+      - "./src:/app/src:ro"
+      - "${CACHE_DIR:-./cache}:/app/host-cache"
+      - /app/tmp
+      - type: volume
+        source: app-cache
+        target: /app/cache
+      - type: bind
+        source: ./config
+        target: /app/config
+    environment:
+      # Variables partagées (depuis config.yml)
+      - LOG_LEVEL=info
+      - TZ=America/Toronto
+      - API_GATEWAY_URL=https://api.example.com
+    extra_hosts:
+      - "external-ip:host-gateway"
+    networks:
+      - traefik-network
+
+  # Service: web
+  web:
+    image: nginx:alpine
+    container_name: web
+    ports:
+      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:${WEB_ALT_PORT:-3001}:3001"
+      - "0.0.0.0:3002:3002"
+    environment:
+      # Variables partagées (depuis config.yml)
+      - LOG_LEVEL=info
+      - TZ=America/Toronto
+      - API_GATEWAY_URL=https://api.example.com
+      # Variables exclusives du service
+      - API_BASE_URL=http://localhost:8080/api
+      - WEB_MODE=test
+    extra_hosts:
+      - "external-ip:host-gateway"
+    networks:
+      - traefik-network
+    profiles:
+      - front
+
+
+networks:
+  traefik-network:
+    driver: bridge
+  # Réseau interne réservé à socket-proxy, Traefik et Dozzle :
+  # les services des profils ne peuvent pas joindre l'API Docker
+  socket-proxy:
+    driver: bridge
+    internal: true
+
+volumes:
+  app-cache:
+  node_modules:

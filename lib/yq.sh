@@ -1,4 +1,6 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# YQ_MODE est lu par les scripts qui sourcent ce fichier (ex: validate-profiles.sh)
+# shellcheck disable=SC2034
 # Fournit la commande `yq` (mikefarah v4+) aux scripts Dev.Local.
 #
 # Si yq n'est pas installé localement, il est exécuté depuis son image Docker
@@ -9,6 +11,13 @@
 #   - les fichiers passés à yq doivent être des chemins relatifs à la racine
 #     (montée en lecture seule dans le conteneur) ;
 #   - yq ne lit pas l'entrée standard.
+
+# mapfile et les tableaux associatifs demandent bash 4+ (macOS fournit bash 3.2 : brew install bash)
+if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
+    echo "bash 4 ou plus récent est requis (version actuelle : ${BASH_VERSION:-inconnue})." >&2
+    echo "Sur macOS : brew install bash" >&2
+    exit 1
+fi
 
 YQ_IMAGE="${YQ_IMAGE:-mikefarah/yq:4.50.1}"
 YQ_MODE=""
@@ -46,3 +55,15 @@ else
     echo -e "\033[91myq v4+ (mikefarah) ou Docker est requis pour lire les fichiers YAML.\033[0m" >&2
     exit 1
 fi
+
+# Lit plusieurs champs scalaires d'un fichier YAML en un seul appel yq.
+# Usage : read_yaml_fields <fichier> <chemin>...
+# Résultat dans le tableau YAML_FIELDS (même ordre que les chemins, "null" si absent).
+# Le tableau est vide si le fichier est illisible ou n'est pas du YAML valide.
+read_yaml_fields() {
+    local file="$1"
+    shift
+    local expr
+    expr=$(IFS=,; echo "$*")
+    mapfile -t YAML_FIELDS < <(yq e "$expr" "$file" 2>/dev/null)
+}

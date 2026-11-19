@@ -1,5 +1,7 @@
 # 🔄 Variables d'Environnement Partagées
 
+> **Rôle de ce document :** référence des variables d'environnement partagées (clés de `config.yml`, règles d'injection, bonnes pratiques, FAQ). Les exemples complets sont dans [shared-env-examples.md](shared-env-examples.md) ; la documentation générale est dans le [README](../README.md).
+
 ## 📋 Vue d'ensemble
 
 Le système de variables d'environnement partagées permet de définir des variables communes qui seront automatiquement injectées dans tous vos services Docker. Ceci est particulièrement utile pour :
@@ -60,33 +62,44 @@ shared_env_config:
       - custom
 ```
 
+Règles appliquées à la génération :
+
+| Clé | Effet |
+|-----|-------|
+| `enabled` | `false` désactive toute injection (défaut : `true`) |
+| `auto_inject` | Groupes de `shared_env` injectés dans chaque service issu d'un profil |
+| `service_specific` | Groupes ajoutés, après ceux de `auto_inject`, au service dont le `name` de profil correspond |
+| `exclude_services` | Services (par `name` de profil) qui ne reçoivent aucune variable partagée, y compris celles de `service_specific` |
+
+Les services intégrés (Traefik, Dozzle, socket-proxy) ne reçoivent jamais de variables partagées.
+
 ## 🔗 Référencement de variables existantes
 
 ### Utiliser une variable déjà définie
 
-Vous pouvez référencer une variable partagée existante pour la renommer ou l'adapter à un service spécifique. Docker Compose résoudra automatiquement la référence au runtime.
+Une valeur peut contenir une référence `${VAR}` ou `${VAR:-défaut}`. Elle est recopiée telle quelle dans `docker-compose.yml`, puis résolue par Docker Compose au démarrage.
+
+**Important :** Docker Compose résout `${VAR}` à partir de son propre environnement — le shell, le fichier `.env` et les secrets de `secrets.env` chargés par les scripts de lancement — et **non** à partir des autres variables de la liste `environment`. Une variable définie uniquement dans `shared_env` ne peut donc pas être référencée par une autre variable partagée : la référence serait remplacée par une chaîne vide, avec un avertissement de Docker Compose.
 
 #### Exemple : Renommer une variable pour un service
 
+```env
+# .env
+API_GATEWAY_URL=https://api.example.com
+AUTH_SERVICE_URL=https://auth.example.com
+```
+
 ```yaml
 shared_env:
-  # Variables globales
-  external_services:
-    - API_GATEWAY_URL=https://api.example.com
-    - AUTH_SERVICE_URL=https://auth.example.com
-  
   # Variables spécifiques au service 'demo'
   demo_only:
     - DEMO_ONLY_VAR=demo-only-value
-    # Référencer une variable existante sous un autre nom
+    # Référencer une variable de .env sous un autre nom
     - DEMO_API_GATEWAY_URL=${API_GATEWAY_URL}
     # Ou avec une valeur de fallback
     - DEMO_AUTH_URL=${AUTH_SERVICE_URL:-https://auth.fallback.com}
 
 shared_env_config:
-  auto_inject:
-    - external_services
-  
   service_specific:
     demo:
       - demo_only
@@ -99,17 +112,18 @@ services:
   demo:
     environment:
       # Variables partagées (depuis config.yml)
-      - API_GATEWAY_URL=https://api.example.com
-      - AUTH_SERVICE_URL=https://auth.example.com
       - DEMO_ONLY_VAR=demo-only-value
       - DEMO_API_GATEWAY_URL=${API_GATEWAY_URL}
-      # Variables du service (profil)
+      - DEMO_AUTH_URL=${AUTH_SERVICE_URL:-https://auth.fallback.com}
+      # Variables exclusives du service
       - ENVIRONMENT=docker-compose
 ```
 
-Docker Compose remplacera `${API_GATEWAY_URL}` par `https://api.example.com` au démarrage du conteneur.
+Docker Compose remplacera `${API_GATEWAY_URL}` par la valeur définie dans `.env` au démarrage du conteneur.
 
 #### Cas d'usage typiques
+
+Dans chaque cas, les variables référencées (`API_GATEWAY_URL`, `DATABASE_HOST`, ...) doivent être définies dans `.env`, le shell ou `secrets.env`.
 
 **1. Adaptation d'URL pour un service legacy :**
 ```yaml
@@ -133,7 +147,7 @@ shared_env:
 ```yaml
 shared_env:
   dev_overrides:
-    # Utiliser une variable d'environnement système si définie, sinon la valeur partagée
+    # Utiliser une variable d'environnement système si définie, sinon une autre
     - MY_API_URL=${OVERRIDE_API_URL:-${API_GATEWAY_URL}}
 ```
 
@@ -149,9 +163,8 @@ shared_env:
 ### ⚠️ Notes importantes
 
 1. **Ordre d'injection** : Les variables partagées sont injectées AVANT les variables du profil
-2. **Résolution Docker Compose** : La substitution `${VAR}` est effectuée par Docker Compose au runtime
-3. **Variables disponibles** : Seules les variables déjà définies plus haut dans la liste peuvent être référencées
-4. **Commentaires** : Les commentaires entre items de liste sont supportés et ignorés lors du parsing
+2. **Résolution Docker Compose** : La substitution `${VAR}` est effectuée par Docker Compose au runtime, à partir de son environnement (shell, `.env`, secrets chargés)
+3. **Commentaires** : Les commentaires entre items de liste sont supportés et ignorés lors du parsing
 
 ### 💡 Astuce : Voir les valeurs résolues
 
@@ -192,82 +205,21 @@ shared_env_config:
 ### 3. Regénérer docker-compose.yml
 
 ```powershell
-.\manage-profiles.ps1 -Action generate
+.\manage-profiles.ps1 -Action generate     # ./manage-profiles.sh generate, ou just generate
 ```
 
-Le script affichera le nombre de variables partagées injectées dans chaque service.
+Le script affichera le nombre de variables partagées injectées dans chaque service :
+
+```
+✅ Ajout : mon-service
+   📌 6 variable(s) partagée(s)
+```
+
+Relancez ensuite les services (`just restart`). La séquence complète de commandes est dans [CHEATSHEET.md](../CHEATSHEET.md#-workflows-courants).
 
 ## 📝 Exemples d'utilisation
 
-### Exemple 1 : URLs de services externes
-
-```yaml
-shared_env:
-  external_services:
-    - API_GATEWAY_URL=https://api.mycompany.com
-    - AUTH_SERVICE_URL=https://auth.mycompany.com
-    - STORAGE_SERVICE_URL=https://storage.mycompany.com
-
-shared_env_config:
-  auto_inject:
-    - external_services
-```
-
-**Résultat :** Tous vos services auront accès à ces 3 URLs sans les redéfinir.
-
-### Exemple 2 : Configuration par environnement
-
-```yaml
-shared_env:
-  development:
-    - NODE_ENV=development
-    - LOG_LEVEL=debug
-    - ENABLE_DEBUG=true
-  
-  production:
-    - NODE_ENV=production
-    - LOG_LEVEL=error
-    - ENABLE_DEBUG=false
-
-shared_env_config:
-  auto_inject:
-    - development  # Changer en 'production' pour prod
-```
-
-### Exemple 3 : Variables spécifiques à certains services
-
-```yaml
-shared_env:
-  database_config:
-    - DB_POOL_MIN=5
-    - DB_POOL_MAX=20
-    - DB_TIMEOUT=30000
-
-shared_env_config:
-  # Ne pas injecter automatiquement
-  auto_inject: []
-  
-  # Seulement pour les services qui ont besoin de DB
-  service_specific:
-    api-backend:
-      - database_config
-    worker-service:
-      - database_config
-```
-
-### Exemple 4 : Exclure certains services
-
-```yaml
-shared_env_config:
-  auto_inject:
-    - global
-  
-  # Traefik et Dozzle n'ont pas besoin des variables métier
-  exclude_services:
-    - traefik
-    - dozzle
-    - redis
-```
+Les exemples complets (URLs de services externes, configuration par environnement, variables spécifiques à certains services, exclusion de services, feature flags, service discovery) sont regroupés dans [shared-env-examples.md](shared-env-examples.md).
 
 ## 🔍 Vérification
 
@@ -284,8 +236,16 @@ services:
       - LOG_LEVEL=info
       - NODE_ENV=development
       - API_GATEWAY_URL=https://api.example.com
-      # Variables spécifiques au service
+      # Variables exclusives du service
       - SERVICE_PORT=8000
+```
+
+```powershell
+Get-Content docker-compose.yml | Select-String "Variables partagées" -Context 0,10
+```
+
+```bash
+grep -A 10 "Variables partagées" docker-compose.yml
 ```
 
 ### Tester dans le conteneur
@@ -294,21 +254,65 @@ services:
 docker compose exec mon-service env | grep API_GATEWAY_URL
 ```
 
+### Ordre de priorité
+
+Quand une variable est définie à la fois dans `config.yml` et dans le profil, la valeur du profil l'emporte : elle est écrite après la valeur partagée, et Docker Compose retient la dernière.
+
+```bash
+# 1. config.yml shared_env → LOG_LEVEL=info
+# 2. profiles/api.yml      → LOG_LEVEL=debug (écrase)
+# Résultat final : LOG_LEVEL=debug
+```
+
+Une variable du shell ne remplace pas une valeur écrite en dur : `LOG_LEVEL=error docker compose up api` laisse `LOG_LEVEL=debug`. Pour qu'une valeur soit modifiable depuis le shell ou `.env`, déclarez-la avec une référence : `LOG_LEVEL=${LOG_LEVEL:-debug}`.
+
 ## 🎨 Bonnes pratiques
 
 ### ✅ À faire
 
 1. **Grouper logiquement** - Créez des groupes cohérents (auth, database, logging, etc.)
-2. **Documenter** - Ajoutez des commentaires dans `config.yml`
-3. **Utiliser des valeurs par défaut** - Pour les environnements de développement
-4. **Centraliser** - Toutes les URLs externes dans un seul groupe
-5. **Versionner** - `config.yml` doit être dans Git
+   ```yaml
+   shared_env:
+     auth:
+       - AUTH_URL=...
+       - AUTH_TIMEOUT=...
+     
+     storage:
+       - S3_BUCKET=...
+       - S3_REGION=...
+   ```
+2. **Nommer clairement**
+   ```yaml
+   # ✅ Bon
+   - API_GATEWAY_URL=...
+   - AUTH_SERVICE_URL=...
+   
+   # ❌ Mauvais
+   - URL1=...
+   - SVC=...
+   ```
+3. **Documenter** - Ajoutez des commentaires dans `config.yml`
+4. **Utiliser des valeurs par défaut** - Raisonnables pour les environnements de développement (`LOG_LEVEL=debug`, `ENABLE_CORS=true`)
+5. **Centraliser** - Toutes les URLs externes dans un seul groupe
+6. **Versionner** - `config.yml` doit être dans Git
 
 ### ❌ À éviter
 
 1. **Secrets** - NE JAMAIS mettre de secrets ici ! Utilisez `secrets.env` avec SOPS
 2. **Mélanger** - Ne pas mélanger config dev et prod dans le même groupe
-3. **Trop de variables** - Si > 20 variables, créer des sous-groupes
+3. **Trop de variables** - Si > 20 variables dans un groupe (en particulier `global`), créer des sous-groupes
+   ```yaml
+   # ❌ Trop de variables dans global
+   global:
+     - VAR1=...
+     - VAR2=...
+     # ... 50 variables ...
+   
+   # ✅ Mieux : grouper
+   database:
+     - DB_VAR1=...
+     - DB_VAR2=...
+   ```
 4. **Hardcoder les IPs** - Utiliser des noms DNS ou des variables d'environnement
 
 ## 🔐 Secrets vs Variables partagées
@@ -333,84 +337,7 @@ shared_env:
     - DATABASE_PASSWORD=supersecret123  # ❌ Utiliser secrets.env !
 ```
 
-## 🔧 Cas d'usage avancés
-
-### Cas 1 : Multi-environnement
-
-Créez des groupes par environnement et changez `auto_inject` selon le besoin :
-
-```yaml
-shared_env:
-  common:
-    - TZ=America/Toronto
-  
-  dev:
-    - API_URL=http://localhost:8000
-    - DEBUG=true
-  
-  staging:
-    - API_URL=https://staging.example.com
-    - DEBUG=false
-  
-  prod:
-    - API_URL=https://api.example.com
-    - DEBUG=false
-
-shared_env_config:
-  auto_inject:
-    - common
-    - dev  # Changer selon l'environnement
-```
-
-### Cas 2 : Feature flags
-
-```yaml
-shared_env:
-  feature_flags:
-    - FEATURE_NEW_UI=true
-    - FEATURE_BETA_API=false
-    - FEATURE_ANALYTICS=true
-
-shared_env_config:
-  auto_inject:
-    - feature_flags
-```
-
-### Cas 3 : Microservices discovery
-
-```yaml
-shared_env:
-  service_discovery:
-    - SERVICE_USER_URL=http://user-service:3000
-    - SERVICE_PRODUCT_URL=http://product-service:3000
-    - SERVICE_ORDER_URL=http://order-service:3000
-    - SERVICE_PAYMENT_URL=http://payment-service:3000
-
-shared_env_config:
-  auto_inject:
-    - service_discovery
-```
-
-## 📊 Workflow complet
-
-```powershell
-# 1. Éditer la configuration
-notepad config.yml
-
-# 2. Ajouter des variables partagées
-# shared_env:
-#   mon_groupe:
-#     - MA_VAR=valeur
-
-# 3. Regénérer docker-compose.yml
-.\manage-profiles.ps1 -Action generate
-
-# 4. Vérifier le résultat
-Get-Content docker-compose.yml | Select-String "MA_VAR"
-
-# 5. Relancer les services
-.\launch.ps1 -c recreate
-```
+La gestion des secrets est décrite dans le [README](../README.md#-gestion-des-secrets-avec-sops).
 
 ## ❓ FAQ
 
@@ -428,7 +355,7 @@ Get-Content docker-compose.yml | Select-String "MA_VAR"
 
 ### Q: Puis-je utiliser des variables dans les valeurs ?
 
-**R:** Non directement dans `config.yml`, mais vous pouvez utiliser `${VAR:-default}` dans les profils qui référencent des variables de `secrets.env`.
+**R:** Oui, avec `${VAR}` ou `${VAR:-default}`, à condition que la variable référencée soit définie dans `.env`, le shell ou `secrets.env` — pas seulement dans `shared_env`. Voir [Référencement de variables existantes](#-référencement-de-variables-existantes).
 
 ### Q: Les variables partagées sont-elles disponibles au build ?
 
@@ -438,6 +365,7 @@ Get-Content docker-compose.yml | Select-String "MA_VAR"
 
 - [Docker Compose - Environment Variables](https://docs.docker.com/compose/environment-variables/)
 - [12 Factor App - Config](https://12factor.net/config)
+- [Exemples pratiques](shared-env-examples.md)
 - [Documentation Dev.Local - README.md](../README.md)
 
 ## 📝 Historique

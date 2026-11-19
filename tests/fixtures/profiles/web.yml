@@ -1,0 +1,25 @@
+# Environnement en map, profil Docker conditionnel, ports publiés
+name: web
+description: "Front de test"
+enabled: true
+always_active: false
+docker_profile: front
+expose_ports: true
+
+docker-compose:
+  image: nginx:alpine
+  container_name: web
+  ports:
+    - "3000:3000"
+    - "${WEB_ALT_PORT:-3001}:3001"
+    - "0.0.0.0:3002:3002"
+  environment:
+    API_BASE_URL: http://localhost:8080/api
+    WEB_MODE: test
+
+traefik:
+  enabled: true
+  prefix: /
+  strip_prefix: false
+  docker_port: 3000
+  local_port: 3000

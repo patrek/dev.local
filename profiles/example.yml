@@ -10,6 +10,9 @@ description: "Service exemple pour démonstration"
 enabled: false  # false pour désactiver le service sans supprimer le profil
 always_active: false  # Si true, démarré automatiquement sans --profile
 docker_profile: example  # Nom du profil Docker (ou null si always_active)
+# false (défaut) : la section ports ci-dessous est ignorée, le service passe par Traefik
+# true : les ports sont publiés, sur 127.0.0.1 sauf si une IP est précisée ("0.0.0.0:8090:80")
+expose_ports: false
 
 # ============================================
 # CONFIGURATION DOCKER
@@ -44,6 +47,11 @@ docker-compose:
     # Ces variables seront automatiquement disponibles sans les redéfinir :
     # - LOG_LEVEL (depuis shared_env.global)
     # - API_GATEWAY_URL (depuis shared_env.external_services)
+  # Volumes (optionnel) : un volume nommé est déclaré automatiquement dans la section volumes:
+  # de docker-compose.yml ; un dossier monté (./, /, ~, ${VAR}) ne l'est pas
+  # volumes:
+  #   - example_data:/var/lib/example      # volume nommé, géré par Docker
+  #   - ./html:/usr/share/nginx/html:ro    # dossier local monté
   healthcheck:
     test: ["CMD", "curl", "-f", "http://localhost:80/"]
     interval: 30s
