@@ -19,6 +19,16 @@ show_usage() {
     echo "       $0 run <service> [commande...]"
 }
 
+# Une option sans valeur est une erreur : sans ce contrôle, "shift 2" échoue sans rien
+# décaler et la boucle d'analyse des arguments ne se termine jamais
+require_value() {
+    if [ $# -lt 2 ]; then
+        echo -e "\033[91mValeur manquante pour l'option $1\033[0m" >&2
+        show_usage >&2
+        exit 1
+    fi
+}
+
 COMMAND="start"
 PROFILES=""
 SERVICE=""
@@ -33,10 +43,12 @@ export HOST_GID="${HOST_GID:-$(id -g)}"
 while [[ $# -gt 0 ]]; do
     case $1 in
         -p|--profile)
+            require_value "$@"
             PROFILES="$2"
             shift 2
             ;;
         -s|--service)
+            require_value "$@"
             SERVICE="$2"
             shift 2
             ;;
