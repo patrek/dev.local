@@ -95,12 +95,55 @@ if ! diff -u --label attendu --label powershell "$ROOT/tests/expected/secrets.tx
 fi
 echo "  ok    variables de secrets détectées conformes"
 
+# validate-profiles.ps1 lit les profils avec powershell-yaml : il ne dépend ni de yq ni du
+# répertoire courant. Le mode "isole" le vérifie : PATH réduit à un répertoire vide (pwsh
+# appelé par son chemin absolu, yq introuvable qu'il soit installé ou non) et exécution
+# depuis un autre répertoire que celui du script.
+PWSH_BIN=$(command -v pwsh)
+EMPTY_PATH_DIR="$TMP_ROOT/path-sans-yq"
+mkdir -p "$EMPTY_PATH_DIR"
+
+# Usage: run_ps_validator <répertoire de travail> <normal|isole>
+run_ps_validator() {
+    if [ "$2" = isole ]; then
+        (cd "$TMP_ROOT" && PATH="$EMPTY_PATH_DIR" "$PWSH_BIN" -NoLogo -NoProfile -File "$1/validate-profiles.ps1" 2>&1)
+    else
+        (cd "$1" && pwsh -NoLogo -NoProfile -File ./validate-profiles.ps1 2>&1)
+    fi
+}
+
+# Profil valide qui piégeait une lecture approximative du YAML : "non" hors des ports,
+# et traefik.enabled à false alors que enabled est à true (aucun champ Traefik requis).
+valid_dir=$(new_workdir powershell-valid validate-profiles.ps1)
+cat > "$valid_dir/profiles/zz-pieges.yml" << 'EOF'
+name: pieges
+description: "non"
+enabled: true
+always_active: true
+docker_profile: null
+
+docker-compose:
+  image: nginx:alpine
+  container_name: pieges
+  ports:
+    - "8099:80"
+  environment:
+    - REPONSE="non"
+
+traefik:
+  enabled: false
+EOF
+
 echo "Validation avec PowerShell"
-if ! (cd "$ps_dir" && pwsh -NoLogo -NoProfile -File ./validate-profiles.ps1 >/dev/null 2>&1); then
-    echo "ECHEC : validate-profiles.ps1 refuse les fixtures valides"
-    exit 1
-fi
-echo "  ok    validate-profiles.ps1 accepte les fixtures"
+for mode in normal isole; do
+    label="validate-profiles.ps1 accepte les fixtures et le profil piège ($mode)"
+    if ! output=$(run_ps_validator "$valid_dir" "$mode"); then
+        echo "ECHEC : $label"
+        echo "$output"
+        exit 1
+    fi
+    echo "  ok    $label"
+done
 
 # Chaque fichier de fixtures/invalid commence par "# expect: <texte>" :
 # la validation doit échouer et afficher ce texte.
@@ -110,15 +153,17 @@ for fixture in "$FIXTURES/invalid/"*.yml; do
     invalid_dir=$(new_workdir "powershell-invalid-$name" validate-profiles.ps1)
     cp "$fixture" "$invalid_dir/profiles/zz-$name.yml"
 
-    output=$(cd "$invalid_dir" && pwsh -NoLogo -NoProfile -File ./validate-profiles.ps1 2>&1)
-    validation_status=$?
-    if [ "$validation_status" -eq 0 ]; then
-        echo "ECHEC : $name est accepté par validate-profiles.ps1"
-        exit 1
-    elif ! echo "$output" | grep -qF "$expected_message"; then
-        echo "ECHEC : $name est rejeté sans le message attendu : $expected_message"
-        exit 1
-    fi
+    for mode in normal isole; do
+        output=$(run_ps_validator "$invalid_dir" "$mode")
+        validation_status=$?
+        if [ "$validation_status" -eq 0 ]; then
+            echo "ECHEC : $name est accepté par validate-profiles.ps1 ($mode)"
+            exit 1
+        elif ! echo "$output" | grep -qF "$expected_message"; then
+            echo "ECHEC : $name est rejeté sans le message attendu ($mode) : $expected_message"
+            exit 1
+        fi
+    done
     echo "  ok    $name est rejeté"
 done
 
@@ -133,6 +178,17 @@ fi
 
 echo "Comparaison Bash / PowerShell"
 status=0
+
+# Même verdict que PowerShell sur le profil piège
+mkdir -p "$TMP_ROOT/bash-valid"
+cp -r "$ROOT/validate-profiles.sh" "$ROOT/lib" "$valid_dir/profiles" "$TMP_ROOT/bash-valid/"
+if output=$(bash "$TMP_ROOT/bash-valid/validate-profiles.sh" 2>&1); then
+    echo "  ok    validate-profiles.sh accepte aussi le profil piège"
+else
+    echo "  DIFF  validate-profiles.sh refuse le profil piège accepté par PowerShell"
+    echo "$output"
+    status=3
+fi
 
 resolved_config "$sh_dir" > "$TMP_ROOT/compose.bash.yml"
 resolved_config "$ps_dir" > "$TMP_ROOT/compose.powershell.yml"

@@ -1,0 +1,15 @@
+# expect: traefik.docker_port doit être entre 1 et 65535 (trouvé: '99999999999')
+name: port-too-large
+enabled: true
+always_active: true
+docker_profile: null
+
+docker-compose:
+  image: nginx:alpine
+  container_name: port-too-large
+
+traefik:
+  enabled: true
+  prefix: /port-too-large
+  docker_port: 99999999999
+  local_port: 8011

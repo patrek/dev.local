@@ -1,0 +1,9 @@
+# expect: Champ 'enabled' doit être true ou false (trouvé: 'True')
+name: capitalized-boolean
+enabled: True
+always_active: true
+docker_profile: null
+
+docker-compose:
+  image: nginx:alpine
+  container_name: capitalized-boolean
