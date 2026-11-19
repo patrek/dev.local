@@ -683,17 +683,20 @@ detect_secret_vars() {
 
         # Méthode 1 : section secrets: (même vide, elle désactive l'auto-détection)
         if grep -q "^secrets:" "$profile"; then
-            # Un secret par ligne : nom, valeur par défaut, description (séparateur US, \x1f)
+            # Un secret par ligne : nom, valeur par défaut, description, type YAML de la
+            # valeur par défaut (séparateur US, \x1f). Une valeur par défaut présente est
+            # conservée telle quelle, même 0, false ou "" ; absente ou null : "changeme".
+            # (pas d'opérateur yq '//' ici : il remplacerait aussi false)
             local sep=$'\x1f'
-            local secret_name secret_default secret_desc
-            while IFS="$sep" read -r secret_name secret_default secret_desc; do
-                [ -z "$secret_default" ] && secret_default="changeme"
+            local secret_name secret_default secret_desc default_tag
+            while IFS="$sep" read -r secret_name secret_default secret_desc default_tag; do
+                [ "$default_tag" = "!!null" ] && secret_default="changeme"
 
-                if [ -n "$secret_name" ] && [ -z "${SECRET_VARS[$secret_name]}" ]; then
+                if [ -n "$secret_name" ] && [ -z "${SECRET_VARS[$secret_name]+x}" ]; then
                     SECRET_VARS["$secret_name"]="$secret_default"
                     echo -e "  \033[90m📌 [$profile_name] $secret_name ($secret_desc)\033[0m"
                 fi
-            done < <(yq e ".secrets[] | [.name // \"\", .default // \"\", .description // \"\"] | join(\"$sep\")" "$profile" 2>/dev/null || true)
+            done < <(yq e ".secrets[] | [.name, .default, .description, (.default | tag)] | (.[] | select(tag == \"!!null\")) = \"\" | join(\"$sep\")" "$profile" 2>/dev/null || true)
         else
             # Méthode 2 (fallback, profil sans section secrets:) : variables ${VAR:-defaut}
             # des entrées de docker-compose.environment uniquement.
@@ -705,7 +708,7 @@ detect_secret_vars() {
                 default_value=$(echo "$match" | sed 's/.*:-\([^}]*\)}.*/\1/')
                 [ -z "$default_value" ] && default_value="changeme"
             
-                if [ -n "$var_name" ] && [ -z "${SECRET_VARS[$var_name]}" ]; then
+                if [ -n "$var_name" ] && [ -z "${SECRET_VARS[$var_name]+x}" ]; then
                     SECRET_VARS["$var_name"]="$default_value"
                     echo -e "  \033[90m📌 [$profile_name] $var_name (auto-détecté)\033[0m"
                 fi
@@ -782,7 +785,8 @@ sync_secrets() {
     # Identifier les nouvelles variables
     declare -A new_vars
     for var in "${!SECRET_VARS[@]}"; do
-        if [ -z "${existing_secrets[$var]}" ]; then
+        # ${...+x} : une variable présente avec une valeur vide (FOO=) existe déjà
+        if [ -z "${existing_secrets[$var]+x}" ]; then
             new_vars["$var"]="${SECRET_VARS[$var]}"
         fi
     done
@@ -808,9 +812,9 @@ sync_secrets() {
     local new_content="$secrets_content"
     [ -n "$new_content" ] && new_content="${new_content}"$'\n'
     new_content="${new_content}"$'\n'"# Variables ajoutées automatiquement le $(date '+%Y-%m-%d %H:%M:%S')"$'\n'
-    for var in $(echo "${!new_vars[@]}" | tr ' ' '\n' | sort); do
+    while IFS= read -r var; do
         new_content="${new_content}${var}=${new_vars[$var]}"$'\n'
-    done
+    done < <(printf '%s\n' "${!new_vars[@]}" | LC_ALL=C sort)
     
     # Chiffrer via stdin : le contenu en clair n'est jamais écrit sur disque.
     # --filename-override fait appliquer à SOPS les règles .sops.yaml de secrets.env
