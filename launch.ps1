@@ -347,35 +347,15 @@ function Connect-EcrLogin {
 
     Write-Host "🐳 Connexion Docker à AWS ECR..." -ForegroundColor Cyan
 
-    # Méthode sécurisée: utiliser un fichier temporaire avec permissions restreintes
-    $tempPass = [System.IO.Path]::GetTempFileName()
-
-    try {
-        # Récupérer le mot de passe dans un fichier temporaire
-        $process = Start-Process -FilePath "aws" -ArgumentList "ecr", "get-login-password", "--region", "ca-central-1" `
-            -NoNewWindow -Wait -PassThru -RedirectStandardOutput $tempPass -RedirectStandardError "nul"
-
-        if ($process.ExitCode -eq 0) {
-            # Utiliser Get-Content avec -Raw et pipe sécurisé
-            Get-Content $tempPass -Raw | docker login --username AWS --password-stdin $ecrUrl
-            $result = $LASTEXITCODE
-        }
-        else {
-            Write-Error "Échec de récupération du mot de passe ECR"
-            $result = 1
-        }
-    }
-    finally {
-        # Nettoyer le fichier temporaire de manière sécurisée
-        if (Test-Path $tempPass) {
-            # Écraser avec des zéros
-            $zeros = New-Object byte[] (Get-Item $tempPass).Length
-            [System.IO.File]::WriteAllBytes($tempPass, $zeros)
-            Remove-Item $tempPass -Force
-        }
+    # Le mot de passe reste en mémoire et passe à docker par l'entrée standard, sans fichier temporaire
+    $password = aws ecr get-login-password --region ca-central-1
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrEmpty($password)) {
+        Write-Error "Échec de récupération du mot de passe ECR"
+        return 1
     }
 
-    return $result
+    $password | docker login --username AWS --password-stdin $ecrUrl
+    return $LASTEXITCODE
 }
 
 # Docker JFrog Login

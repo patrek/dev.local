@@ -340,27 +340,15 @@ connect_ecr_login() {
 
     echo -e "\033[96m🐳 Connexion Docker à AWS ECR...\033[0m"
 
-    # Méthode sécurisée: utiliser un fichier temporaire avec permissions restreintes
-    local temp_pass
-    temp_pass=$(mktemp -t ecr-pass.XXXXXX)
-    chmod 600 "$temp_pass"
+    # Le mot de passe passe directement d'un processus à l'autre, sans fichier temporaire
+    aws ecr get-login-password --region ca-central-1 | docker login --username AWS --password-stdin "$ecr_url"
+    local statuses=("${PIPESTATUS[@]}")
 
-    # Nettoyer le fichier temporaire à la fin
-    trap "rm -f '$temp_pass'" EXIT
-
-    if aws ecr get-login-password --region ca-central-1 > "$temp_pass" 2>/dev/null; then
-        docker login --username AWS --password-stdin "$ecr_url" < "$temp_pass"
-        local result=$?
-        # Écraser le contenu avant suppression
-        shred -u "$temp_pass" 2>/dev/null || rm -f "$temp_pass"
-        trap - EXIT
-        return $result
-    else
-        rm -f "$temp_pass"
-        trap - EXIT
+    if [ "${statuses[0]}" -ne 0 ]; then
         echo -e "\033[91mÉchec de récupération du mot de passe ECR\033[0m"
         return 1
     fi
+    return "${statuses[1]}"
 }
 
 # Docker JFrog Login
