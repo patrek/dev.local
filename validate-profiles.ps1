@@ -31,6 +31,7 @@ $Script:ProfileFields = @(
 # Profils chargés par Read-ProfileFile : chemin -> @{ Values ; Text ; Ports }
 # Comparaisons ordinales : les clés et les valeurs sont sensibles à la casse, comme en Bash
 $Script:LoadedProfiles = [System.Collections.Hashtable]::new([System.StringComparer]::Ordinal)
+$Script:DuplicateKeyProfiles = [System.Collections.Hashtable]::new([System.StringComparer]::Ordinal)
 
 function Show-Usage {
     Write-Host @"
@@ -305,6 +306,10 @@ function Read-ProfileFile {
             $documents = @(ConvertFrom-Yaml -Yaml $text -AllDocuments -ErrorAction Stop)
         }
         catch {
+            # powershell-yaml refuse une clé écrite deux fois dans une même section
+            if ("$($_.Exception.Message)" -match 'Duplicate key') {
+                $Script:DuplicateKeyProfiles[$ProfilePath] = $true
+            }
             return $false
         }
         # Documents multiples non supportés
@@ -331,15 +336,97 @@ function Read-ProfileFile {
         $fieldValues[$Script:ProfileFields[$i]] = $values[$i]
     }
 
+    # docker-compose.ports : liste (list), autre valeur (other) ou absent / vide (none)
     $ports = @()
+    $portsKind = 'none'
     $compose = Get-MapEntry -Map $root -Key 'docker-compose'
     if ($compose -is [System.Collections.IDictionary]) {
         $composePorts = Get-MapEntry -Map $compose -Key 'ports'
-        if (Test-YamlList $composePorts) { $ports = @($composePorts) }
+        if (Test-YamlList $composePorts) {
+            $ports = @($composePorts)
+            $portsKind = 'list'
+        }
+        elseif ($null -ne $composePorts) {
+            $portsKind = 'other'
+        }
     }
 
-    $Script:LoadedProfiles[$ProfilePath] = @{ Values = $fieldValues; Text = $text; Ports = $ports }
+    $Script:LoadedProfiles[$ProfilePath] = @{ Values = $fieldValues; Text = $text; Ports = $ports; PortsKind = $portsKind }
     return $true
+}
+
+$Script:PortFormatsHelp = 'Formats acceptés: "8080:80", "127.0.0.1:8080:80", "80", ou la syntaxe longue (target, published). Retirez la section ports si le service ne publie aucun port.'
+
+# Syntaxe courte d'un port (une variable ${...} compte pour un nombre) :
+#   [IP:][PORT_HOTE[-FIN]:]PORT_CONTENEUR[-FIN][/tcp|udp|sctp]
+function Test-ShortPort {
+    param([string]$Text)
+
+    $normalized = $Text -replace '\$\{[^}]*\}', '1'
+    return $normalized -cmatch '^((([0-9]{1,3}[.]){3}[0-9]{1,3}|\[[0-9a-fA-F:]+\]):([0-9]+(-[0-9]+)?)?:|[0-9]+(-[0-9]+)?:)?[0-9]+(-[0-9]+)?(/(tcp|udp|sctp))?$'
+}
+
+# Éléments de docker-compose.ports qui ne sont pas un port valide, dans l'ordre de
+# validate-profiles.sh : syntaxe longue sans target, éléments vides ou imbriqués, puis texte
+function Get-InvalidPort {
+    param([object[]]$Ports)
+
+    $maps = @()
+    $nested = @()
+    $scalars = @()
+    foreach ($port in $Ports) {
+        if ($port -is [System.Collections.IDictionary]) {
+            if (-not ($port.Keys -ccontains 'target')) {
+                $keys = [string[]]@($port.Keys | ForEach-Object { "$_" })
+                [Array]::Sort($keys, [System.StringComparer]::Ordinal)
+                $maps += "syntaxe longue sans target ($($keys -join ', '))"
+            }
+        }
+        elseif ($null -eq $port -or (Test-YamlList $port)) {
+            $nested += 'élément vide ou imbriqué'
+        }
+        else {
+            $text = ConvertTo-CanonicalText $port
+            if (-not (Test-ShortPort $text)) { $scalars += "'$text'" }
+        }
+    }
+    return @($maps + $nested + $scalars)
+}
+
+# Ports sous la forme [ip:][hôte:]conteneur, syntaxe longue (published:target) d'abord,
+# comme validate-profiles.sh
+function Get-PortSpec {
+    param([object[]]$Ports)
+
+    $long = @()
+    $short = @()
+    foreach ($port in $Ports) {
+        if ($port -is [System.Collections.IDictionary]) {
+            if (($port.Keys -ccontains 'published') -and ($port.Keys -ccontains 'target')) {
+                $long += "$(ConvertTo-CanonicalText $port['published']):$(ConvertTo-CanonicalText $port['target'])"
+            }
+        }
+        elseif ($port -is [string] -or $port -is [int] -or $port -is [long]) {
+            $short += "$port"
+        }
+    }
+    return @($long + $short)
+}
+
+# Port hôte d'un port "[ip:][hôte:]conteneur[/proto]" s'il est numérique, sinon $null
+function Get-HostPort {
+    param([string]$Spec)
+
+    $withoutProtocol = ($Spec -split '/')[0]
+    if ($withoutProtocol.StartsWith('[')) { return $null }
+    $parts = $withoutProtocol -split ':'
+    $hostPort = switch ($parts.Count) {
+        2 { $parts[0] }
+        3 { $parts[1] }
+        default { '' }
+    }
+    if ($hostPort -cmatch '^[0-9]+$') { return $hostPort }
+    return $null
 }
 
 # Retourne un champ chargé par Read-ProfileFile, ou la valeur par défaut s'il est absent
@@ -369,6 +456,10 @@ function Test-YamlSyntax {
 
     if (-not (Read-ProfileFile $ProfilePath)) {
         $basename = [System.IO.Path]::GetFileName($ProfilePath)
+        if ($Script:DuplicateKeyProfiles.ContainsKey($ProfilePath)) {
+            Write-Error-Message $basename "Clé YAML en double (une clé ne peut apparaître qu'une fois dans une même section)"
+            return $false
+        }
         Write-Error-Message $basename "Syntaxe YAML invalide (ou valeur multi-ligne / documents multiples non supportés)"
         return $false
     }
@@ -443,9 +534,16 @@ function Test-Values {
         $hasErrors = $true
     }
 
-    # Validation des ports : "non" (au lieu de "none") comme premier port de docker-compose.ports
-    if ($loaded.Ports.Count -gt 0 -and $loaded.Ports[0] -is [string] -and $loaded.Ports[0] -ceq 'non') {
-        Write-Error-Message $basename "Valeur de port invalide: 'non' (devrait être 'none' ou un port valide)"
+    # Validation des ports : docker-compose.ports est une liste de ports valides
+    if ($loaded.PortsKind -eq 'list') {
+        $invalidPorts = @(Get-InvalidPort -Ports $loaded.Ports)
+        if ($invalidPorts.Count -gt 0) {
+            Write-Error-Message $basename "Port invalide dans docker-compose.ports: $($invalidPorts -join ', '). $Script:PortFormatsHelp"
+            $hasErrors = $true
+        }
+    }
+    elseif ($loaded.PortsKind -eq 'other') {
+        Write-Error-Message $basename "Champ 'docker-compose.ports' doit être une liste. $Script:PortFormatsHelp"
         $hasErrors = $true
     }
 
@@ -522,9 +620,9 @@ function Test-CrossProfile {
         $exposePorts = Get-FieldValue $profilePath ".expose_ports" "false"
         if ($exposePorts -cne "true") { continue }
 
-        foreach ($port in $Script:LoadedProfiles[$profilePath].Ports) {
-            if ($port -isnot [string] -or $port -notmatch '^([0-9]+):') { continue }
-            $hostPort = $Matches[1]
+        foreach ($portSpec in @(Get-PortSpec -Ports $Script:LoadedProfiles[$profilePath].Ports)) {
+            $hostPort = Get-HostPort -Spec $portSpec
+            if ($null -eq $hostPort) { continue }
             if ($hostPorts.ContainsKey($hostPort)) {
                 Write-Warning-Message $basename "Port hôte $hostPort déjà utilisé par $($hostPorts[$hostPort])"
             }

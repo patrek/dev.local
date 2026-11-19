@@ -477,6 +477,8 @@ Règles vérifiées par la validation (`validate-profiles.sh` / `validate-profil
 - `name`, `enabled` (`true` ou `false`) et `docker-compose.image` sont obligatoires ; `docker-compose.container_name` est recommandé et doit être unique entre profils activés ;
 - `always_active: false` exige un `docker_profile` ;
 - `expose_ports`, s'il est présent, vaut `true` ou `false` ;
+- `docker-compose.ports`, s'il est présent, est une liste de ports valides : syntaxe courte (`"8080:80"`, `"127.0.0.1:8080:80"`, `"80"`) ou syntaxe longue avec `target` ;
+- une clé ne peut pas être écrite deux fois dans une même section ;
 - quand `traefik.enabled` vaut `true`, `prefix` est requis et commence par `/`, `docker_port` et `local_port` sont compris entre 1 et 65535.
 
 Dans le service généré, les [variables partagées](#-variables-denvironnement-partagées) sont placées en tête de `environment`, avant celles du profil.

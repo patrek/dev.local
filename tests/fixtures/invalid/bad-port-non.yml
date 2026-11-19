@@ -1,4 +1,4 @@
-# expect: Valeur de port invalide: 'non'
+# expect: Port invalide dans docker-compose.ports: 'non'
 name: bad-port-non
 enabled: true
 always_active: true

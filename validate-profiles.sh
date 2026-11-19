@@ -61,6 +61,35 @@ PROFILE_FIELDS=(
     .traefik.local_port .traefik.priority
 )
 declare -A PROFILE_VALUES
+PORT_FORMATS_HELP="Formats acceptés: \"8080:80\", \"127.0.0.1:8080:80\", \"80\", ou la syntaxe longue (target, published). Retirez la section ports si le service ne publie aucun port."
+
+# Champs calculés par yq dans le même appel, une ligne chacun, toujours préfixée pour ne
+# jamais être vide. Stockés dans PROFILE_VALUES sous la clé indiquée.
+#   @dup         true si une clé est écrite deux fois dans une même section
+#   @ports_kind  type YAML de docker-compose.ports (!!seq pour une liste, vide si absent)
+#   @bad_ports   éléments de docker-compose.ports qui ne sont pas un port valide
+#   @host_ports  ports sous la forme [ip:][hôte:]conteneur ; syntaxe longue -> published:target
+# Chaque résultat doit dépendre de l'élément lu : yq émet une constante seule ("texte") même
+# quand select() ne retient rien.
+# Syntaxe courte acceptée (une variable ${...} compte pour un nombre) :
+#   [IP:][PORT_HOTE[-FIN]:]PORT_CONTENEUR[-FIN][/tcp|udp|sctp]
+COMPUTED_KEYS=(@dup @ports_kind @bad_ports @host_ports)
+read -r -d '' VALID_SHORT_PORT <<'EOF' || true
+(tostring | sub("[$][{][^}]*[}]"; "1") | test("^((([0-9]{1,3}[.]){3}[0-9]{1,3}|\[[0-9a-fA-F:]+\]):([0-9]+(-[0-9]+)?)?:|[0-9]+(-[0-9]+)?:)?[0-9]+(-[0-9]+)?(/(tcp|udp|sctp))?$"))
+EOF
+read -r -d '' COMPUTED_EXPR <<EOF || true
+("dup=" + ([.. | select(tag == "!!map") | (keys | length) != (keys | unique | length)] | any | tostring)),
+("portskind=" + (.["docker-compose"].ports | tag)),
+("badports=" + ([.["docker-compose"].ports | select(tag == "!!seq") | .[] | (
+    (select(tag == "!!map" and (has("target") | not)) | "syntaxe longue sans target (" + (keys | sort | join(", ")) + ")"),
+    (select(tag == "!!seq" or tag == "!!null") | "élément vide ou imbriqué" + (tag | sub(".*"; ""))),
+    (select(tag != "!!map" and tag != "!!seq" and tag != "!!null") | select($VALID_SHORT_PORT | not) | "'" + tostring + "'")
+)] | join(", "))),
+("hostports=" + ([.["docker-compose"].ports | select(tag == "!!seq") | .[] | (
+    (select(tag == "!!map" and has("published") and has("target")) | (.published | tostring) + ":" + (.target | tostring)),
+    (select(tag == "!!str" or tag == "!!int") | tostring)
+)] | join(" ")))
+EOF
 
 # Fonction pour afficher un message d'erreur
 error() {
@@ -92,17 +121,36 @@ load_profile() {
     expr=$(IFS=,; echo "${PROFILE_FIELDS[*]}")
 
     local output
-    output=$(yq e "$expr" "$file" 2>/dev/null) || return 1
+    output=$(yq e "$expr,$COMPUTED_EXPR" "$file" 2>/dev/null) || return 1
 
     local values
     mapfile -t values <<< "$output"
     # Une ligne par champ : un écart signale une valeur multi-ligne ou plusieurs documents
-    [ "${#values[@]}" -eq "${#PROFILE_FIELDS[@]}" ] || return 1
+    [ "${#values[@]}" -eq $((${#PROFILE_FIELDS[@]} + ${#COMPUTED_KEYS[@]})) ] || return 1
 
     local i
     for i in "${!PROFILE_FIELDS[@]}"; do
         PROFILE_VALUES["$file|${PROFILE_FIELDS[$i]}"]="${values[$i]}"
     done
+    for i in "${!COMPUTED_KEYS[@]}"; do
+        local computed="${values[$((${#PROFILE_FIELDS[@]} + i))]}"
+        PROFILE_VALUES["$file|${COMPUTED_KEYS[$i]}"]="${computed#*=}"
+    done
+}
+
+# Affiche le port hôte d'un port "[ip:][hôte:]conteneur[/proto]" s'il est numérique
+host_port_of() {
+    local spec="${1%%/*}"
+    [[ "$spec" == \[* ]] && return 0
+    local parts
+    IFS=':' read -ra parts <<< "$spec"
+    local host_port=""
+    case "${#parts[@]}" in
+        2) host_port="${parts[0]}" ;;
+        3) host_port="${parts[1]}" ;;
+    esac
+    [[ "$host_port" =~ ^[0-9]+$ ]] && echo "$host_port"
+    return 0
 }
 
 # Retourne un champ chargé par load_profile, ou la valeur par défaut s'il est absent
@@ -134,6 +182,12 @@ validate_yaml_syntax() {
 
     if ! load_profile "$profile"; then
         error "$(basename "$profile")" "Syntaxe YAML invalide (ou valeur multi-ligne / documents multiples non supportés)"
+        return 1
+    fi
+    if [ "${PROFILE_VALUES["$profile|@dup"]}" = "true" ]; then
+        error "$(basename "$profile")" "Clé YAML en double (une clé ne peut apparaître qu'une fois dans une même section)"
+        # Profil traité comme non chargé par les validations inter-profils
+        unset "PROFILE_VALUES[$profile|.name]"
         return 1
     fi
     return 0
@@ -213,15 +267,17 @@ validate_values() {
         has_errors=1
     fi
 
-    # Validation des ports
-    if grep -q "^[[:space:]]*ports:" "$profile"; then
-        local port_line
-        port_line=$(grep -A1 "^[[:space:]]*ports:" "$profile" | tail -1)
-        # "non" quelle que soit l'écriture ("non", 'non' ou non), comme validate-profiles.ps1
-        if echo "$port_line" | grep -qE "\"non\"|'non'|^[[:space:]]*-[[:space:]]+non[[:space:]]*(#.*)?\$"; then
-            error "$basename" "Valeur de port invalide: 'non' (devrait être 'none' ou un port valide)"
+    # Validation des ports : docker-compose.ports est une liste de ports valides
+    local ports_kind="${PROFILE_VALUES["$profile|@ports_kind"]}"
+    if [ "$ports_kind" = "!!seq" ]; then
+        local bad_ports="${PROFILE_VALUES["$profile|@bad_ports"]}"
+        if [ -n "$bad_ports" ]; then
+            error "$basename" "Port invalide dans docker-compose.ports: $bad_ports. $PORT_FORMATS_HELP"
             has_errors=1
         fi
+    elif [ -n "$ports_kind" ] && [ "$ports_kind" != "!!null" ]; then
+        error "$basename" "Champ 'docker-compose.ports' doit être une liste. $PORT_FORMATS_HELP"
+        has_errors=1
     fi
 
     # Validation Traefik si activé
@@ -270,8 +326,6 @@ validate_cross_profile() {
     declare -A container_names
     declare -A host_ports
     local has_errors=0
-    # Élément de liste "port_hôte:..." entre guillemets doubles, simples ou sans guillemets
-    local host_port_pattern="^[[:space:]]*-[[:space:]]*[\"']?([0-9]+):"
 
     for profile in $PROFILES_DIR/*.yml; do
         [ -f "$profile" ] || continue
@@ -300,17 +354,17 @@ validate_cross_profile() {
 
         # Vérifier les conflits de ports (uniquement si format standard port:port)
         # Sans expose_ports, les ports du profil ne sont pas publiés : aucun conflit possible
-        if [ "$(get_value "$profile" ".expose_ports" "false")" = "true" ] && grep -q "^[[:space:]]*ports:" "$profile"; then
-            while IFS= read -r port_line; do
-                if [[ "$port_line" =~ $host_port_pattern ]]; then
-                    local host_port="${BASH_REMATCH[1]}"
-                    if [ -n "${host_ports[$host_port]}" ]; then
-                        warning "$basename" "Port hôte $host_port déjà utilisé par ${host_ports[$host_port]}"
-                    else
-                        host_ports["$host_port"]="$basename"
-                    fi
+        if [ "$(get_value "$profile" ".expose_ports" "false")" = "true" ]; then
+            local port_spec host_port
+            for port_spec in ${PROFILE_VALUES["$profile|@host_ports"]}; do
+                host_port=$(host_port_of "$port_spec")
+                [ -n "$host_port" ] || continue
+                if [ -n "${host_ports[$host_port]}" ]; then
+                    warning "$basename" "Port hôte $host_port déjà utilisé par ${host_ports[$host_port]}"
+                else
+                    host_ports["$host_port"]="$basename"
                 fi
-            done < <(sed -n '/^[[:space:]]*ports:/,/^[[:space:]]*[a-z]/p' "$profile" | grep "^[[:space:]]*-")
+            done
         fi
     done
 
