@@ -4,16 +4,36 @@
 
 .DESCRIPTION
     Gère le cycle de vie des services Docker avec support SOPS pour les secrets.
+    Le script peut être appelé depuis n'importe quel répertoire. Le répertoire courant et
+    les variables d'environnement de la session appelante sont rétablis à la fin.
+    Le code de sortie est celui de la dernière commande docker, aws ou sops exécutée.
 
-.PARAMETER p
-    Profils à démarrer (séparés par virgules)
+.PARAMETER SelectedProfiles
+    Profils à démarrer (séparés par virgules). Alias : -p, -profile
 
-.PARAMETER c
-    Commande : start, stop, recreate, ps, run, sso, id, ecr-login, jfrog-login, edit-secrets
+.PARAMETER Command
+    Commande (alias : -c), aussi acceptée en première position :
+      start, up       Démarrer les services (défaut)
+      stop, down      Arrêter les services
+      recreate        Arrêter puis redémarrer les services
+      ps              Lister les containers
+      logs            Suivre les logs (de tous les services ou de -ServiceItem)
+      run             Exécuter une commande ponctuelle dans un service
+      sso             Connexion AWS SSO
+      id              Afficher l'identité AWS
+      ecr-login       Connecter Docker à AWS ECR
+      jfrog-login     Connecter Docker à JFrog
+      edit-secrets    Éditer les secrets avec SOPS
+      view-secrets    Afficher les secrets déchiffrés
+
+.PARAMETER ServiceItem
+    Service visé par les commandes logs et run (alias : -s, -service), aussi accepté en
+    deuxième position.
 
 .PARAMETER runArgs
     Pour la commande run : la commande à exécuter dans le conteneur, après le nom du service.
     Placer "--" avant les arguments qui commencent par un tiret (inutile avec "just run").
+    "--" n'est pas reconnu avec "pwsh -File" : utiliser "pwsh -Command" dans ce cas.
 
 .EXAMPLE
     .\launch.ps1
@@ -22,6 +42,10 @@
 .EXAMPLE
     .\launch.ps1 -p api,frontend
     Démarre uniquement les services api et frontend
+
+.EXAMPLE
+    .\launch.ps1 logs -service api
+    Suit les logs du service api
 
 .EXAMPLE
     .\launch.ps1 -c edit-secrets
