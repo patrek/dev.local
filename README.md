@@ -929,6 +929,12 @@ docker-compose:
   command: npm run dev
 ```
 
+Pour conserver des données entre deux démarrages, utiliser un volume nommé
+(`node_modules:/app/node_modules`, ou la syntaxe longue `type: volume` avec `source`).
+`generate` le déclare automatiquement dans la section `volumes:` de `docker-compose.yml` ;
+les dossiers montés (`./`, `/`, `~`, `${VAR}`) et les volumes anonymes ne sont pas déclarés.
+Un nom de volume compte au moins deux caractères et ne peut pas être une variable.
+
 ### Exemple 4 bis : Outils de build dans Docker (gulp, npm, ...)
 
 Un profil peut servir d'outil : aucun Node.js n'est requis sur le poste.

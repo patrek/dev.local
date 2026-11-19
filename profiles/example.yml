@@ -47,6 +47,11 @@ docker-compose:
     # Ces variables seront automatiquement disponibles sans les redéfinir :
     # - LOG_LEVEL (depuis shared_env.global)
     # - API_GATEWAY_URL (depuis shared_env.external_services)
+  # Volumes (optionnel) : un volume nommé est déclaré automatiquement dans la section volumes:
+  # de docker-compose.yml ; un dossier monté (./, /, ~, ${VAR}) ne l'est pas
+  # volumes:
+  #   - example_data:/var/lib/example      # volume nommé, géré par Docker
+  #   - ./html:/usr/share/nginx/html:ro    # dossier local monté
   healthcheck:
     test: ["CMD", "curl", "-f", "http://localhost:80/"]
     interval: 30s
