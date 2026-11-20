@@ -213,8 +213,116 @@ test_invalid_profiles() {
     done
 }
 
+# Vérifie qu'une sortie contient un texte
+# Usage: check_contains <libellé> <sortie> <texte attendu>
+check_contains() {
+    if echo "$2" | grep -qF -- "$3"; then
+        pass "$1"
+    else
+        fail "$1" "texte attendu absent : $3"$'\n'"$2"
+    fi
+}
+
+# Sorties JSON et commandes sans question, destinées aux outils et aux agents IA.
+# stdout ne doit contenir que le JSON : il est comparé tel quel.
+test_machine_interface() {
+    echo "Interface pour les outils (--json, --dry-run, add sans question)"
+    local dir
+    dir=$(new_workdir machine)
+    cp "$ROOT/launch.sh" "$dir/"
+
+    local output
+    if output=$(bash "$dir/manage-profiles.sh" list --json 2>/dev/null); then
+        printf '%s\n' "$output" > "$dir/profiles.json"
+        check_golden "list --json conforme" "$dir/profiles.json" "$EXPECTED/profiles.json"
+    else
+        fail "manage-profiles.sh list --json" "$output"
+    fi
+    [ "$UPDATE" = true ] && return
+
+    output=$(bash "$dir/manage-profiles.sh" generate --dry-run --json 2>/dev/null)
+    if [ "$output" = '[{"file":"docker-compose.yml","status":"new"},{"file":"traefik/dynamic.yml","status":"new"}]' ] \
+        && [ ! -e "$dir/docker-compose.yml" ] && [ ! -e "$dir/traefik/dynamic.yml" ]; then
+        pass "generate --dry-run --json n'écrit aucun fichier"
+    else
+        fail "generate --dry-run --json n'écrit aucun fichier" "$output"
+    fi
+
+    bash "$dir/manage-profiles.sh" generate > /dev/null 2>&1
+    output=$(bash "$dir/manage-profiles.sh" generate --dry-run --json 2>/dev/null)
+    if [ "$output" = '[{"file":"docker-compose.yml","status":"unchanged"},{"file":"traefik/dynamic.yml","status":"unchanged"}]' ]; then
+        pass "generate --dry-run --json après génération : unchanged"
+    else
+        fail "generate --dry-run --json après génération : unchanged" "$output"
+    fi
+
+    if output=$(bash "$dir/validate-profiles.sh" --json 2>/dev/null); then
+        check_contains "validate --json sur des profils valides" "$output" '{"valid":true,'
+        check_contains "validate --json sans erreur" "$output" '"errors":[],"warnings":[]}'
+    else
+        fail "validate --json sur des profils valides" "$output"
+    fi
+
+    # add sans question : aucune entrée standard disponible
+    if output=$(bash "$dir/manage-profiles.sh" add --name "Outil Test" --image nginx:alpine \
+            --description 'Un "test"' --docker-port 8000 --publish 9100:8000 --docker-profile outil \
+            --traefik-prefix /outil --env 'A=1' --env "B=it's: #x" --secret outil_token < /dev/null 2>&1) \
+        && [ -f "$dir/profiles/outil-test.yml" ]; then
+        pass "add sans question crée le profil"
+    else
+        fail "add sans question crée le profil" "$output"
+    fi
+    if grep -q '^  outil-test:$' "$dir/docker-compose.yml" \
+        && grep -qF -- '- "127.0.0.1:9100:8000"' "$dir/docker-compose.yml" \
+        && grep -qF -- "- 'B=it''s: #x'" "$dir/docker-compose.yml"; then
+        pass "add sans question regénère docker-compose.yml"
+    else
+        fail "add sans question regénère docker-compose.yml" "$(grep -A12 '^  outil-test:$' "$dir/docker-compose.yml")"
+    fi
+    output=$(bash "$dir/manage-profiles.sh" generate --dry-run --json 2>/dev/null)
+    check_contains "generate --dry-run après add : unchanged" "$output" '"docker-compose.yml","status":"unchanged"'
+
+    if output=$(bash "$dir/manage-profiles.sh" add --name outil-test --image nginx < /dev/null 2>&1); then
+        fail "add refuse un profil existant" "code 0 au lieu d'une erreur"
+    else
+        pass "add refuse un profil existant"
+    fi
+    if output=$(bash "$dir/manage-profiles.sh" add --name autre --image nginx --docker-port abc < /dev/null 2>&1) \
+        || [ -e "$dir/profiles/autre.yml" ]; then
+        fail "add refuse un port invalide" "$output"
+    else
+        pass "add refuse un port invalide"
+    fi
+    if output=$(bash "$dir/manage-profiles.sh" list --inconnu 2>&1); then
+        fail "manage-profiles.sh refuse une option inconnue" "code 0 au lieu d'une erreur"
+    else
+        check_contains "manage-profiles.sh refuse une option inconnue" "$output" "Argument inconnu"
+    fi
+
+    cp "$FIXTURES/invalid/bad-port-non.yml" "$dir/profiles/zz-bad.yml"
+    if output=$(bash "$dir/validate-profiles.sh" --json 2>/dev/null); then
+        fail "validate --json signale les erreurs" "code 0 au lieu d'une erreur"
+    else
+        check_contains "validate --json signale les erreurs" "$output" \
+            '"errors":[{"profile":"zz-bad","message":"Port invalide dans docker-compose.ports'
+    fi
+    rm "$dir/profiles/zz-bad.yml"
+
+    if command -v docker >/dev/null 2>&1; then
+        if output=$(bash "$dir/launch.sh" status --json 2>/dev/null); then
+            check_contains "launch.sh status --json liste les services" "$output" \
+                '{"service":"api","state":"not_created","health":null}'
+        else
+            fail "launch.sh status --json liste les services" "$output"
+        fi
+    else
+        echo "  saut  launch.sh status --json (docker absent)"
+    fi
+}
+
 test_generate
 test_secret_detection
+test_machine_interface
 if [ "$UPDATE" = false ]; then
     test_valid_profiles
     test_invalid_profiles

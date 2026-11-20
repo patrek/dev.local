@@ -15,6 +15,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")" || exit 1
 
 show_usage() {
     echo "Usage: $0 [start|stop|recreate|ps|logs [service]|sso|id|ecr-login|jfrog-login|edit-secrets|view-secrets]"
+    echo "       $0 status [--json]"
     echo "       $0 --profile <profils> start"
     echo "       $0 run <service> [commande...]"
 }
@@ -33,6 +34,7 @@ COMMAND="start"
 PROFILES=""
 SERVICE=""
 RUN_ARGS=()
+JSON_OUTPUT=false
 
 # Permet aux profils d'exécuter les conteneurs avec l'utilisateur courant
 # (user: "${HOST_UID:-1000}:${HOST_GID:-1000}") pour ne pas créer de fichiers root
@@ -61,8 +63,12 @@ while [[ $# -gt 0 ]]; do
             RUN_ARGS=("$@")
             break
             ;;
-        up|start|stop|down|recreate|ps|logs|sso|id|ecr-login|jfrog-login|edit-secrets|view-secrets)
+        up|start|stop|down|recreate|ps|status|logs|sso|id|ecr-login|jfrog-login|edit-secrets|view-secrets)
             COMMAND="$1"
+            shift
+            ;;
+        --json)
+            JSON_OUTPUT=true
             shift
             ;;
         -h|--help)
@@ -83,6 +89,12 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [ "$JSON_OUTPUT" = true ] && [ "$COMMAND" != "status" ]; then
+    echo -e "\033[91mL'option --json n'est acceptée que par la commande status\033[0m" >&2
+    show_usage >&2
+    exit 1
+fi
 
 # Lire une valeur de config.yml (ex: get_config_value .aws.region <défaut>)
 # yq est chargé dans un sous-shell : s'il est indisponible, on garde la valeur par défaut
@@ -333,6 +345,54 @@ list_containers() {
     docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
 }
 
+# État de chaque service de docker-compose.yml, démarré ou non, tous profils confondus.
+# Une ligne par service : nom, état (running, exited, ... ou not_created si le conteneur
+# n'existe pas) et santé (healthy, unhealthy, starting, ou vide sans healthcheck).
+# Avec --json : [{"service", "state", "health"}], health à null s'il est vide.
+# Lecture seule : rien n'est généré ni démarré.
+show_status() {
+    if [ ! -f "docker-compose.yml" ]; then
+        echo -e "\033[91mdocker-compose.yml non trouvé - générez-le avec: ./manage-profiles.sh generate\033[0m" >&2
+        return 1
+    fi
+
+    # stderr écarté : docker compose y signale chaque variable non définie
+    local services containers
+    if ! services=$(docker compose --profile "*" config --services 2>/dev/null) \
+        || ! containers=$(docker compose --profile "*" ps --all --format '{{.Service}}|{{.State}}|{{.Health}}' 2>/dev/null); then
+        echo -e "\033[91mImpossible de lire l'état des services\033[0m" >&2
+        docker compose --profile "*" config --quiet >&2
+        return 1
+    fi
+
+    local -A states=() healths=()
+    local service state health
+    while IFS='|' read -r service state health; do
+        [ -n "$service" ] || continue
+        states["$service"]="$state"
+        healths["$service"]="$health"
+    done <<< "$containers"
+
+    source "lib/json.sh"
+    local items=()
+    [ "$JSON_OUTPUT" = true ] || printf '%-32s %-12s %s\n' "SERVICE" "STATE" "HEALTH"
+    while IFS= read -r service; do
+        [ -n "$service" ] || continue
+        state="${states[$service]:-not_created}"
+        health="${healths[$service]:-}"
+        if [ "$JSON_OUTPUT" = true ]; then
+            items+=("{\"service\":$(json_string "$service"),\"state\":$(json_string "$state"),\"health\":$(json_string_or_null "$health")}")
+        else
+            printf '%-32s %-12s %s\n' "$service" "$state" "$health"
+        fi
+    done < <(printf '%s\n' "$services" | LC_ALL=C sort)
+
+    if [ "$JSON_OUTPUT" = true ]; then
+        local IFS=,
+        echo "[${items[*]}]"
+    fi
+}
+
 # Afficher les logs
 show_logs() {
     if [ -n "$SERVICE" ]; then
@@ -417,6 +477,9 @@ case "$COMMAND" in
         ;;
     ps)
         list_containers
+        ;;
+    status)
+        show_status
         ;;
     logs)
         show_logs

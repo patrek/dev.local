@@ -19,7 +19,7 @@ jobs:
         run: >
           docker run --rm -v "$PWD":/mnt:ro -w /mnt koalaman/shellcheck:v0.11.0
           -x -S warning
-          launch.sh manage-profiles.sh validate-profiles.sh menu.sh lib/yq.sh
+          launch.sh manage-profiles.sh validate-profiles.sh menu.sh lib/yq.sh lib/json.sh
           tests/run-tests.sh tests/compare-shells.sh
 
   psscriptanalyzer:
@@ -34,6 +34,18 @@ jobs:
           $results = Invoke-ScriptAnalyzer -Path . -Recurse -Severity Error
           $results | Format-Table -AutoSize -Property ScriptName, Line, RuleName, Message
           if ($results) { exit 1 }
+
+  schemas:
+    name: Schémas JSON
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Valider les profils et la configuration avec leurs schémas
+        run: |
+          pipx run check-jsonschema==0.39.0 --schemafile schemas/profile.schema.json \
+            profiles/*.yml tests/fixtures/profiles/*.yml
+          pipx run check-jsonschema==0.39.0 --schemafile schemas/config.schema.json \
+            config.yml tests/fixtures/config.yml
 
   test-bash:
     name: Tests Bash (yq ${{ matrix.yq }})

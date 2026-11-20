@@ -17,6 +17,7 @@
       stop, down      Arrêter les services
       recreate        Arrêter puis redémarrer les services
       ps              Lister les containers
+      status          État de chaque service, démarré ou non (--json : sortie JSON)
       logs            Suivre les logs (de tous les services ou de -ServiceItem)
       run             Exécuter une commande ponctuelle dans un service
       sso             Connexion AWS SSO
@@ -62,7 +63,7 @@ param(
 
     [Parameter(Position = 0)]
     [Alias("c")]
-    [ValidateSet('up', 'start', 'stop', 'down', 'recreate', 'ps', 'logs', 'run', 'sso', 'id', 'ecr-login', 'jfrog-login', 'edit-secrets', 'view-secrets')]
+    [ValidateSet('up', 'start', 'stop', 'down', 'recreate', 'ps', 'status', 'logs', 'run', 'sso', 'id', 'ecr-login', 'jfrog-login', 'edit-secrets', 'view-secrets')]
     [string]$Command = 'start',
 
     [Parameter(Position = 1)]
@@ -358,6 +359,61 @@ function List-Containers {
     docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
 }
 
+# État de chaque service de docker-compose.yml, démarré ou non, tous profils confondus.
+# Une ligne par service : nom, état (running, exited, ... ou not_created si le conteneur
+# n'existe pas) et santé (healthy, unhealthy, starting, ou vide sans healthcheck).
+# Avec -Json : [{"service", "state", "health"}], health à null s'il est vide.
+# Lecture seule : rien n'est généré ni démarré.
+function Show-Status {
+    param([bool]$Json)
+
+    if (-not (Test-Path "docker-compose.yml")) {
+        [Console]::Error.WriteLine("docker-compose.yml non trouvé - générez-le avec: .\manage-profiles.ps1 -Action generate")
+        exit 1
+    }
+
+    # stderr écarté : docker compose y signale chaque variable non définie
+    $services = @(docker compose --profile "*" config --services 2>$null)
+    $containers = @()
+    if ($LASTEXITCODE -eq 0) {
+        $containers = @(docker compose --profile "*" ps --all --format '{{.Service}}|{{.State}}|{{.Health}}' 2>$null)
+    }
+    if ($LASTEXITCODE -ne 0) {
+        [Console]::Error.WriteLine("Impossible de lire l'état des services")
+        docker compose --profile "*" config --quiet 2>&1 | Write-ToStderr
+        exit 1
+    }
+
+    $states = [System.Collections.Hashtable]::new([System.StringComparer]::Ordinal)
+    $healths = [System.Collections.Hashtable]::new([System.StringComparer]::Ordinal)
+    foreach ($line in $containers) {
+        $parts = "$line".Split('|')
+        if ($parts.Count -lt 3 -or $parts[0] -eq '') { continue }
+        $states[$parts[0]] = $parts[1]
+        $healths[$parts[0]] = $parts[2]
+    }
+
+    $sortedServices = [string[]]@($services | Where-Object { $_ })
+    [Array]::Sort($sortedServices, [System.StringComparer]::Ordinal)
+
+    $items = foreach ($service in $sortedServices) {
+        [ordered]@{
+            service = $service
+            state   = if ($states.ContainsKey($service)) { $states[$service] } else { 'not_created' }
+            health  = if ($healths[$service]) { $healths[$service] } else { $null }
+        }
+    }
+
+    if ($Json) {
+        ConvertTo-Json -InputObject @($items) -Compress -Depth 3
+        return
+    }
+    '{0,-32} {1,-12} {2}' -f 'SERVICE', 'STATE', 'HEALTH'
+    foreach ($item in $items) {
+        '{0,-32} {1,-12} {2}' -f $item.service, $item.state, $item.health
+    }
+}
+
 # Afficher les logs
 function Show-Logs {
     param([string]$service)
@@ -492,9 +548,16 @@ function Connect-JfrogLogin {
 $extraArguments = @()
 if ($Command -notin @('run', 'logs') -and $ServiceItem) { $extraArguments += $ServiceItem }
 if ($Command -ne 'run' -and $runArgs) { $extraArguments += $runArgs }
+# status accepte --json, écrit comme pour launch.sh
+$jsonOutput = $false
+if ($Command -eq 'status' -and $extraArguments -ccontains '--json') {
+    $jsonOutput = $true
+    $extraArguments = @($extraArguments | Where-Object { $_ -cne '--json' })
+}
 if ($extraArguments.Count -gt 0) {
     Write-Host "Argument inconnu: $($extraArguments -join ' ')" -ForegroundColor Red
     Write-Host "Usage: .\launch.ps1 [start|stop|recreate|ps|logs [service]|sso|id|ecr-login|jfrog-login|edit-secrets|view-secrets]"
+    Write-Host "       .\launch.ps1 status [--json]"
     Write-Host "       .\launch.ps1 -p <profils> start"
     Write-Host "       .\launch.ps1 run <service> [commande...]"
     exit 1
@@ -516,6 +579,7 @@ try {
         'down' { Stop-Services }
         'recreate' { Recreate-Services }
         'ps' { List-Containers }
+        'status' { Show-Status -Json $jsonOutput }
         'logs' { Show-Logs -service $ServiceItem }
         'run' { Invoke-RunCommand -service $ServiceItem -arguments $runArgs }
         'sso' { Connect-AwsSso }

@@ -220,4 +220,60 @@ else
     status=3
 fi
 
+# Interface pour les outils : mêmes options et même JSON sur stdout dans les deux shells.
+# Usage: compare_output <libellé> <arguments passés aux deux scripts>...
+# Les scripts comparés sont ceux de $bash_script et $powershell_script.
+# COMPARE_STDOUT=false : seul le code de sortie est comparé (texte destiné à l'utilisateur).
+compare_output() {
+    local label="$1"
+    shift
+    (cd "$sh_dir" && bash "./$bash_script.sh" "$@" 2>/dev/null) > "$TMP_ROOT/output.bash.txt"
+    local bash_status=$?
+    (cd "$ps_dir" && pwsh -NoLogo -NoProfile -File "./$powershell_script.ps1" "$@" 2>/dev/null) | tr -d '\r' > "$TMP_ROOT/output.powershell.txt"
+    local powershell_status=${PIPESTATUS[0]}
+
+    if [ "$bash_status" -ne "$powershell_status" ]; then
+        echo "  DIFF  $label : code de sortie $bash_status (bash) et $powershell_status (powershell)"
+        status=3
+    elif [ "${COMPARE_STDOUT:-true}" = false ] \
+        || diff -u --label bash --label powershell "$TMP_ROOT/output.bash.txt" "$TMP_ROOT/output.powershell.txt"; then
+        echo "  ok    $label"
+    else
+        echo "  DIFF  $label"
+        status=3
+    fi
+}
+
+cp "$ROOT/launch.sh" "$sh_dir/"
+cp "$ROOT/launch.ps1" "$ps_dir/"
+add_options=(add --name "Outil Test" --image nginx:alpine --description 'Un "test" \ ici'
+    --docker-port 8000 --publish 9100:8000 --docker-profile outil --traefik-prefix /outil
+    --env 'A=1' --env "B=it's: #x" --secret outil_token)
+
+bash_script=manage-profiles powershell_script=manage-profiles
+compare_output "list --json identique" list --json
+compare_output "generate --dry-run --json identique" generate --dry-run --json
+COMPARE_STDOUT=false compare_output "add sans question : même code de sortie" "${add_options[@]}"
+if diff -u --label bash --label powershell "$sh_dir/profiles/outil-test.yml" "$ps_dir/profiles/outil-test.yml"; then
+    echo "  ok    add sans question : même profil créé"
+else
+    echo "  DIFF  profil créé par add"
+    status=3
+fi
+compare_output "add refuse un profil existant" "${add_options[@]}"
+compare_output "add refuse un port invalide" add --name autre --image nginx --docker-port abc
+compare_output "option inconnue refusée" list --inconnu
+
+bash_script=launch powershell_script=launch
+compare_output "status --json identique" status --json
+
+# Avec un profil invalide : mêmes erreurs et même code de sortie
+bash_script=validate-profiles powershell_script=validate-profiles
+compare_output "validate --json identique (profils valides)" --json
+for dir in "$sh_dir" "$ps_dir"; do
+    cp "$FIXTURES/invalid/bad-port-non.yml" "$dir/profiles/zz-bad.yml"
+    cp "$FIXTURES/invalid/duplicate-container.yml" "$dir/profiles/zz-dup.yml"
+done
+compare_output "validate --json identique (profils invalides)" --json
+
 exit "$status"

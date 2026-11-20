@@ -7,7 +7,121 @@ set -e
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
+show_usage() {
+    cat << EOF
+Usage: $0 <action> [options]
+
+Actions:
+    list [--json]                   Lister les profils
+    generate [--dry-run [--json]]   Générer docker-compose.yml et traefik/dynamic.yml
+                                    (--dry-run : rien n'est écrit, indique ce qui changerait)
+    add                             Ajouter un profil (questions interactives)
+    add --name <nom> --image <image> [options]
+                                    Ajouter un profil sans aucune question
+    init-secrets                    Créer secrets.env chiffré
+    sync-secrets                    Ajouter à secrets.env les variables manquantes
+    list-secrets                    Noms des variables de secrets, un par ligne
+
+Options de add (toutes sauf --name et --image sont facultatives) :
+    --description <texte>           Description du service
+    --docker-port <port>            Port interne du conteneur (défaut : 80)
+    --local-port <port>             Port du service lancé sur l'hôte (défaut : --docker-port)
+    --publish <hôte:conteneur>      Publier un port sur 127.0.0.1 (active expose_ports)
+    --docker-profile <profil>       Démarrage à la demande (défaut : service toujours actif)
+    --traefik-prefix </préfixe>     Activer la route Traefik sur ce préfixe
+    --keep-prefix                   Ne pas retirer le préfixe avant de transmettre la requête
+    --env <NOM=valeur>              Variable d'environnement (répétable)
+    --secret <NOM>                  Variable de secret (répétable)
+    --no-generate                   Ne pas regénérer docker-compose.yml après la création
+
+Codes de sortie : 0 succès, 1 erreur.
+EOF
+}
+
 ACTION="${1:-list}"
+[ $# -gt 0 ] && shift
+
+JSON_OUTPUT=false
+DRY_RUN=false
+ADD_OPTIONS_GIVEN=false
+ADD_NAME=""
+ADD_IMAGE=""
+ADD_DESCRIPTION=""
+ADD_DOCKER_PORT=""
+ADD_LOCAL_PORT=""
+ADD_PUBLISH=""
+ADD_DOCKER_PROFILE=""
+ADD_TRAEFIK_PREFIX=""
+ADD_KEEP_PREFIX=false
+ADD_NO_GENERATE=false
+ADD_ENV=()
+ADD_SECRETS=()
+
+usage_error() {
+    echo -e "\033[91m$1\033[0m" >&2
+    show_usage >&2
+    exit 1
+}
+
+case "$ACTION" in
+    -h|--help)
+        show_usage
+        exit 0
+        ;;
+esac
+
+# Options : chacune n'est acceptée que par l'action qu'elle concerne
+while [ $# -gt 0 ]; do
+    option="$1"
+    case "$ACTION:$option" in
+        *:-h|*:--help)
+            show_usage
+            exit 0
+            ;;
+        list:--json|generate:--json)
+            JSON_OUTPUT=true
+            shift
+            ;;
+        generate:--dry-run)
+            DRY_RUN=true
+            shift
+            ;;
+        add:--keep-prefix)
+            ADD_OPTIONS_GIVEN=true
+            ADD_KEEP_PREFIX=true
+            shift
+            ;;
+        add:--no-generate)
+            ADD_OPTIONS_GIVEN=true
+            ADD_NO_GENERATE=true
+            shift
+            ;;
+        add:--name|add:--image|add:--description|add:--docker-port|add:--local-port|add:--publish|add:--docker-profile|add:--traefik-prefix|add:--env|add:--secret)
+            [ $# -ge 2 ] || usage_error "Valeur manquante pour l'option $option"
+            ADD_OPTIONS_GIVEN=true
+            case "$option" in
+                --name) ADD_NAME="$2" ;;
+                --image) ADD_IMAGE="$2" ;;
+                --description) ADD_DESCRIPTION="$2" ;;
+                --docker-port) ADD_DOCKER_PORT="$2" ;;
+                --local-port) ADD_LOCAL_PORT="$2" ;;
+                --publish) ADD_PUBLISH="$2" ;;
+                --docker-profile) ADD_DOCKER_PROFILE="$2" ;;
+                --traefik-prefix) ADD_TRAEFIK_PREFIX="$2" ;;
+                --env) ADD_ENV+=("$2") ;;
+                --secret) ADD_SECRETS+=("$2") ;;
+            esac
+            shift 2
+            ;;
+        *)
+            usage_error "Argument inconnu pour l'action $ACTION: $option"
+            ;;
+    esac
+done
+if [ "$JSON_OUTPUT" = true ] && [ "$ACTION" = "generate" ] && [ "$DRY_RUN" != true ]; then
+    usage_error "generate --json demande --dry-run"
+fi
+
 PROFILES_DIR="profiles"
 DOCKER_COMPOSE_FILE="docker-compose.yml"
 TRAEFIK_DYNAMIC_FILE="traefik/dynamic.yml"
@@ -21,6 +135,7 @@ NAMESPACE="devlocal"
 
 # yq local ou via Docker (voir lib/yq.sh)
 source "lib/yq.sh"
+source "lib/json.sh"
 
 # Configuration des variables partagées (chargée par load_config)
 SHARED_ENV_ENABLED=true
@@ -168,94 +283,189 @@ show_profiles() {
     done
 }
 
-# Fonction pour ajouter un profil
-add_profile() {
-    echo -e "\n\033[96m➕ AJOUTER UN NOUVEAU PROFIL\033[0m"
-    echo -e "\033[90m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
-    
-    # Collecter les informations
-    read -p $'\nNom du service (ex: api-backend, frontend): ' name
-    if [ -z "$name" ]; then
-        echo -e "\033[91mLe nom est requis\033[0m"
+# Signale une option de add invalide (stderr) ; retourne 1
+add_option_error() {
+    echo -e "\033[91m$1\033[0m" >&2
+    return 1
+}
+
+# Ajoute un secret au profil en cours de création (variables secrets et secrets_doc)
+# Usage : add_secret_entry <nom du profil> <nom du secret> [description]
+add_secret_entry() {
+    local secret_var
+    secret_var=$(echo "$2" | tr '[:lower:]' '[:upper:]' | sed 's/[^A-Z0-9_]/_/g')
+    local secret_desc="${3:-Secret pour $1}"
+    secret_desc="${secret_desc//\\/\\\\}"
+    secret_desc="${secret_desc//\"/\\\"}"
+
+    secrets="${secrets}    - ${secret_var}=\${${secret_var}:-changeme}"$'\n'
+    secrets_doc="${secrets_doc}  - name: ${secret_var}"$'\n'"    description: \"${secret_desc}\""$'\n'"    default: changeme"$'\n'
+}
+
+# Renseigne les variables du profil à créer depuis les options de la ligne de commande
+# (add sans question). Retourne 1 si une valeur est invalide.
+read_add_options() {
+    local port_pattern='^[0-9]{1,5}$'
+
+    image="$ADD_IMAGE"
+    [ -n "$image" ] || { add_option_error "L'option --image est requise"; return 1; }
+    [[ "$image" =~ ^[^[:space:]\"\'#]+$ ]] || { add_option_error "Image invalide: $image"; return 1; }
+
+    description="$ADD_DESCRIPTION"
+    [[ "$description" != *$'\n'* ]] || { add_option_error "La description doit tenir sur une ligne"; return 1; }
+
+    docker_port="${ADD_DOCKER_PORT:-80}"
+    local_port="${ADD_LOCAL_PORT:-$docker_port}"
+    [[ "$docker_port" =~ $port_pattern ]] || { add_option_error "Port invalide pour --docker-port: $docker_port"; return 1; }
+    [[ "$local_port" =~ $port_pattern ]] || { add_option_error "Port invalide pour --local-port: $local_port"; return 1; }
+
+    host_binding="$ADD_PUBLISH"
+    if [ -n "$host_binding" ] && ! [[ "$host_binding" =~ ^[^[:space:]\"\'#]+$ ]]; then
+        add_option_error "Port invalide pour --publish: $host_binding"
         return 1
     fi
-    
-    # Nettoyer le nom
-    name=$(echo "$name" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
-    filename="$PROFILES_DIR/$name.yml"
-    
-    if [ -f "$filename" ]; then
-        echo -e "\033[91mUn profil '$name' existe déjà !\033[0m"
-        return 1
-    fi
-    
-    read -p "Description du service: " description
-    read -p "Image Docker (ex: nginx:latest, registry.io/myapp:v1.0): " image
-    read -p "Port interne du conteneur (ex: 80, 8000): " docker_port
-    read -p "Port exposé localement (via Traefik host) (ex: 8001): " local_port
-    [ -z "$docker_port" ] && docker_port="80"
-    [ -z "$local_port" ] && local_port=$docker_port
-    
-    # Port mapping docker-compose (host:container) can be same as local_port:docker_port or different
-    # Par défaut le service n'est joignable que via Traefik ; publier un port est optionnel
-    read -p "Publier aussi un port sur l'hôte (hôte:conteneur, ex: 9000:$docker_port, Entrée pour aucun): " host_binding
-    expose_ports="false"
-    ports_section=""
-    if [ -n "$host_binding" ] && [ "$host_binding" != "none" ]; then
-        expose_ports="true"
-        ports_section=$'\n'"  ports:"$'\n'"    - \"$host_binding\""
-    fi
-    
-    echo -e "\n\033[93m🔑 Activation du service\033[0m"
-    read -p "Service toujours actif (démarré par défaut) ? (O/n): " always_active_input
+
     always_active="true"
     docker_profile="null"
-    if [ "$always_active_input" = "n" ]; then
+    if [ -n "$ADD_DOCKER_PROFILE" ]; then
+        [[ "$ADD_DOCKER_PROFILE" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]] \
+            || { add_option_error "Profil Docker invalide: $ADD_DOCKER_PROFILE"; return 1; }
         always_active="false"
-        read -p "Nom du profil Docker (pour démarrage conditionnel, ex: $name): " docker_profile
-        [ -z "$docker_profile" ] && docker_profile=$name
+        docker_profile="$ADD_DOCKER_PROFILE"
     fi
-    
-    echo -e "\n\033[93m🔧 Configuration Traefik\033[0m"
-    read -p "Activer Traefik ? (o/N): " enable_traefik_input
+
     enable_traefik="false"
     traefik_prefix="/"
     strip_prefix="false"
-    
-    if [ "$enable_traefik_input" = "o" ]; then
+    if [ -n "$ADD_TRAEFIK_PREFIX" ]; then
+        [[ "$ADD_TRAEFIK_PREFIX" =~ ^/[a-zA-Z0-9/_.-]*$ ]] \
+            || { add_option_error "Préfixe Traefik invalide (doit commencer par /): $ADD_TRAEFIK_PREFIX"; return 1; }
         enable_traefik="true"
-        read -p "Préfixe de route (ex: /api, /app): " traefik_prefix
-        [ -z "$traefik_prefix" ] && traefik_prefix="/$name"
-        read -p "Supprimer le préfixe avant transmission ? (O/n): " strip_prefix_input
-        [ "$strip_prefix_input" != "n" ] && strip_prefix="true"
+        traefik_prefix="$ADD_TRAEFIK_PREFIX"
+        [ "$ADD_KEEP_PREFIX" = true ] || strip_prefix="true"
     fi
-    
-    echo -e "\n\033[93m🔐 Variables d'environnement\033[0m"
-    echo "Entrez les variables (format: NOM=valeur), ligne vide pour terminer"
+
+    # Entre apostrophes dans le profil : la valeur est du texte, quel que soit son contenu
     env_vars=""
-    while true; do
-        read -p "Variable d'environnement: " env_var
-        [ -z "$env_var" ] && break
-        env_vars="${env_vars}    - ${env_var}"$'\n'
+    local env_var
+    for env_var in "${ADD_ENV[@]}"; do
+        if ! [[ "$env_var" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || [[ "$env_var" == *$'\n'* ]]; then
+            add_option_error "Variable invalide pour --env (format NOM=valeur): $env_var"
+            return 1
+        fi
+        env_vars="${env_vars}    - '${env_var//\'/\'\'}'"$'\n'
     done
-    
-    echo -e "\n\033[93m🔑 Secrets depuis secrets.env\033[0m"
-    echo "Entrez les secrets (format: SECRET_NAME), ligne vide pour terminer"
+
     secrets=""
     secrets_doc=""
-    while true; do
-        read -p "Nom du secret: " secret
-        [ -z "$secret" ] && break
-        secret_var=$(echo "$secret" | tr '[:lower:]' '[:upper:]' | sed 's/[^A-Z0-9_]/_/g')
-        read -p "  Description de $secret_var (optionnel): " secret_desc
-        [ -z "$secret_desc" ] && secret_desc="Secret pour $name"
-        
-        secrets="${secrets}    - ${secret_var}=\${${secret_var}:-changeme}"$'\n'
-        secrets_doc="${secrets_doc}  - name: ${secret_var}"$'\n'"    description: \"${secret_desc}\""$'\n'"    default: changeme"$'\n'
+    local secret
+    for secret in "${ADD_SECRETS[@]}"; do
+        [[ "$secret" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] \
+            || { add_option_error "Nom de secret invalide pour --secret: $secret"; return 1; }
+        add_secret_entry "$name" "$secret"
     done
-    
+}
+
+# Fonction pour ajouter un profil : questions interactives, ou sans aucune question si des
+# options sont passées sur la ligne de commande (voir show_usage)
+add_profile() {
+    local interactive=true
+    [ "$ADD_OPTIONS_GIVEN" = true ] && interactive=false
+
+    if [ "$interactive" = true ]; then
+        echo -e "\n\033[96m➕ AJOUTER UN NOUVEAU PROFIL\033[0m"
+        echo -e "\033[90m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+        read -p $'\nNom du service (ex: api-backend, frontend): ' name
+    else
+        name="$ADD_NAME"
+    fi
+    if [ -z "$name" ]; then
+        echo -e "\033[91mLe nom est requis\033[0m" >&2
+        return 1
+    fi
+
+    # Nettoyer le nom
+    name=$(echo "$name" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
+    filename="$PROFILES_DIR/$name.yml"
+
+    if [ -f "$filename" ]; then
+        echo -e "\033[91mUn profil '$name' existe déjà !\033[0m" >&2
+        return 1
+    fi
+
+    if [ "$interactive" = true ]; then
+        read -p "Description du service: " description
+        read -p "Image Docker (ex: nginx:latest, registry.io/myapp:v1.0): " image
+        read -p "Port interne du conteneur (ex: 80, 8000): " docker_port
+        read -p "Port exposé localement (via Traefik host) (ex: 8001): " local_port
+        [ -z "$docker_port" ] && docker_port="80"
+        [ -z "$local_port" ] && local_port=$docker_port
+
+        # Par défaut le service n'est joignable que via Traefik ; publier un port est optionnel
+        read -p "Publier aussi un port sur l'hôte (hôte:conteneur, ex: 9000:$docker_port, Entrée pour aucun): " host_binding
+        [ "$host_binding" = "none" ] && host_binding=""
+
+        echo -e "\n\033[93m🔑 Activation du service\033[0m"
+        read -p "Service toujours actif (démarré par défaut) ? (O/n): " always_active_input
+        always_active="true"
+        docker_profile="null"
+        if [ "$always_active_input" = "n" ]; then
+            always_active="false"
+            read -p "Nom du profil Docker (pour démarrage conditionnel, ex: $name): " docker_profile
+            [ -z "$docker_profile" ] && docker_profile=$name
+        fi
+
+        echo -e "\n\033[93m🔧 Configuration Traefik\033[0m"
+        read -p "Activer Traefik ? (o/N): " enable_traefik_input
+        enable_traefik="false"
+        traefik_prefix="/"
+        strip_prefix="false"
+
+        if [ "$enable_traefik_input" = "o" ]; then
+            enable_traefik="true"
+            read -p "Préfixe de route (ex: /api, /app): " traefik_prefix
+            [ -z "$traefik_prefix" ] && traefik_prefix="/$name"
+            read -p "Supprimer le préfixe avant transmission ? (O/n): " strip_prefix_input
+            [ "$strip_prefix_input" != "n" ] && strip_prefix="true"
+        fi
+
+        echo -e "\n\033[93m🔐 Variables d'environnement\033[0m"
+        echo "Entrez les variables (format: NOM=valeur), ligne vide pour terminer"
+        env_vars=""
+        while true; do
+            read -p "Variable d'environnement: " env_var
+            [ -z "$env_var" ] && break
+            env_vars="${env_vars}    - ${env_var}"$'\n'
+        done
+
+        echo -e "\n\033[93m🔑 Secrets depuis secrets.env\033[0m"
+        echo "Entrez les secrets (format: SECRET_NAME), ligne vide pour terminer"
+        secrets=""
+        secrets_doc=""
+        while true; do
+            read -p "Nom du secret: " secret
+            [ -z "$secret" ] && break
+            read -p "  Description (optionnel): " secret_desc
+            add_secret_entry "$name" "$secret" "$secret_desc"
+        done
+    else
+        read_add_options || return 1
+    fi
+
+    expose_ports="false"
+    ports_section=""
+    if [ -n "$host_binding" ]; then
+        expose_ports="true"
+        ports_section=$'\n'"  ports:"$'\n'"    - \"$host_binding\""
+    fi
+
+    # La description est écrite entre guillemets dans le profil
+    description="${description//\\/\\\\}"
+    description="${description//\"/\\\"}"
+
     # Combiner env vars et secrets
     all_env="${env_vars}${secrets}"
+    all_env="${all_env%$'\n'}"
     [ -z "$all_env" ] && all_env="    # Aucune variable d'environnement"
     
     # Section secrets si nécessaire
@@ -267,6 +477,7 @@ add_profile() {
     # Générer le fichier YAML
     mkdir -p "$PROFILES_DIR"
     cat > "$filename" << EOF
+# yaml-language-server: \$schema=../schemas/profile.schema.json
 # Profil généré automatiquement
 name: $name
 description: "$description"
@@ -303,11 +514,103 @@ EOF
     
     echo -e "\n\033[92m✅ Profil créé : $filename\033[0m"
     echo -e "\033[90m📝 Vous pouvez éditer ce fichier pour personnaliser davantage\033[0m"
-    
-    # Proposer de regénérer docker-compose.yml
-    read -p $'\nRegénérer docker-compose.yml maintenant ? (O/n): ' regen
+
+    # Regénérer docker-compose.yml : proposé en mode interactif, fait d'office sinon
+    local regen=""
+    if [ "$interactive" = true ]; then
+        read -p $'\nRegénérer docker-compose.yml maintenant ? (O/n): ' regen
+    elif [ "$ADD_NO_GENERATE" = true ]; then
+        regen="n"
+    fi
     if [ "$regen" != "n" ]; then
         generate_docker_compose
+    fi
+}
+
+# Liste des profils en JSON : un objet par fichier, avec les valeurs par défaut appliquées
+# comme le fait la génération
+show_profiles_json() {
+    local items=()
+    local profile
+
+    for profile in "$PROFILES_DIR"/*.yml; do
+        [ -f "$profile" ] || continue
+
+        # description en dernier : si elle est multi-ligne, ses lignes suivent
+        read_yaml_fields "$profile" .name .enabled .always_active .docker_profile .expose_ports \
+            '.["docker-compose"].image' .traefik.enabled .traefik.prefix .description
+        if [ "${#YAML_FIELDS[@]}" -lt 9 ]; then
+            echo -e "\033[91mProfil illisible (YAML invalide): $profile\033[0m" >&2
+            return 1
+        fi
+
+        local name
+        name=$(value_or_default "${YAML_FIELDS[0]}" "$(basename "$profile" .yml)")
+        local description
+        description=$(printf '%s\n' "${YAML_FIELDS[@]:8}")
+        local traefik_enabled
+        traefik_enabled=$(value_or_default "${YAML_FIELDS[6]}" false)
+        local url="null"
+        if [ "$traefik_enabled" = "true" ]; then
+            url=$(json_string "http://localhost:8080$(value_or_default "${YAML_FIELDS[7]}" "/$name")")
+        fi
+
+        items+=("$(printf '{"name":%s,"file":%s,"description":%s,"enabled":%s,"always_active":%s,"docker_profile":%s,"expose_ports":%s,"image":%s,"traefik_enabled":%s,"url":%s}' \
+            "$(json_string "$name")" \
+            "$(json_string "$profile")" \
+            "$(json_string_or_null "$description")" \
+            "$(json_bool "$(value_or_default "${YAML_FIELDS[1]}" true)")" \
+            "$(json_bool "${YAML_FIELDS[2]}")" \
+            "$(json_string_or_null "${YAML_FIELDS[3]}")" \
+            "$(json_bool "${YAML_FIELDS[4]}")" \
+            "$(json_string_or_null "${YAML_FIELDS[5]}")" \
+            "$(json_bool "$traefik_enabled")" \
+            "$url")")
+    done
+
+    local IFS=,
+    echo "[${items[*]}]"
+}
+
+# generate --dry-run : génère dans un dossier temporaire et indique, pour chaque fichier,
+# s'il serait créé (new), modifié (changed) ou identique (unchanged). Rien n'est écrit dans
+# le projet. Avec --json, seul le résultat est écrit sur stdout ; le reste va sur stderr.
+generate_dry_run() {
+    local real_files=("$DOCKER_COMPOSE_FILE" "$TRAEFIK_DYNAMIC_FILE")
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    # shellcheck disable=SC2064
+    trap "rm -rf '$tmp_dir'" EXIT
+    DOCKER_COMPOSE_FILE="$tmp_dir/docker-compose.yml"
+    TRAEFIK_DYNAMIC_FILE="$tmp_dir/dynamic.yml"
+    local new_files=("$DOCKER_COMPOSE_FILE" "$TRAEFIK_DYNAMIC_FILE")
+
+    if [ "$JSON_OUTPUT" = true ]; then
+        generate_docker_compose >&2 || return 1
+    else
+        generate_docker_compose || return 1
+    fi
+
+    local items=()
+    local index status
+    [ "$JSON_OUTPUT" = true ] || echo -e "\n\033[96m🔎 Simulation : aucun fichier n'a été écrit\033[0m"
+    for index in 0 1; do
+        # La ligne d'horodatage change à chaque génération : ignorée
+        if [ ! -f "${real_files[$index]}" ]; then
+            status="new"
+        elif diff -q <(grep -v '^# Dernière génération' "${real_files[$index]}") \
+                     <(grep -v '^# Dernière génération' "${new_files[$index]}") > /dev/null; then
+            status="unchanged"
+        else
+            status="changed"
+        fi
+        items+=("{\"file\":$(json_string "${real_files[$index]}"),\"status\":\"$status\"}")
+        [ "$JSON_OUTPUT" = true ] || echo "  ${real_files[$index]} : $status"
+    done
+
+    if [ "$JSON_OUTPUT" = true ]; then
+        local IFS=,
+        echo "[${items[*]}]"
     fi
 }
 
@@ -565,8 +868,8 @@ EOF
 generate_traefik_dynamic() {
     echo -e "\n\033[96m🔧 GÉNÉRATION DE traefik/dynamic.yml\033[0m"
     
-    mkdir -p "traefik"
-    
+    mkdir -p "$(dirname "$TRAEFIK_DYNAMIC_FILE")"
+
     # Buffers
     local routers=""
     local middlewares=""
@@ -883,10 +1186,18 @@ case "$ACTION" in
         add_profile
         ;;
     list)
-        show_profiles
+        if [ "$JSON_OUTPUT" = true ]; then
+            show_profiles_json
+        else
+            show_profiles
+        fi
         ;;
     generate)
-        generate_docker_compose
+        if [ "$DRY_RUN" = true ]; then
+            generate_dry_run
+        else
+            generate_docker_compose
+        fi
         ;;
     init-secrets)
         init_secrets
@@ -898,8 +1209,6 @@ case "$ACTION" in
         list_secret_vars
         ;;
     *)
-        echo -e "\033[91mAction inconnue: $ACTION\033[0m" >&2
-        echo "Usage: $0 [add|list|generate|init-secrets|sync-secrets|list-secrets]" >&2
-        exit 1
+        usage_error "Action inconnue: $ACTION"
         ;;
 esac

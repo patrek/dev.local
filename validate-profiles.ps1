@@ -20,6 +20,11 @@ $Script:Errors = 0
 $Script:Warnings = 0
 $Script:Validated = 0
 
+# --json : résultat en JSON sur stdout, sans autre texte (comme validate-profiles.sh --json)
+$Script:JsonOutput = $false
+$Script:JsonErrors = [System.Collections.Generic.List[object]]::new()
+$Script:JsonWarnings = [System.Collections.Generic.List[object]]::new()
+
 # Champs lus dans chaque profil (même liste et même ordre que PROFILE_FIELDS dans validate-profiles.sh)
 $Script:ProfileFields = @(
     '.name', '.enabled', '.always_active', '.docker_profile', '.expose_ports',
@@ -39,6 +44,9 @@ VALIDATION DES PROFILS DEV.LOCAL 2.0
 
 Usage:
     .\validate-profiles.ps1          # Valider tous les profils
+    .\validate-profiles.ps1 --json   # Résultat en JSON sur stdout, sans autre texte :
+                                     # {"valid", "validated", "errors", "warnings"}
+                                     # errors et warnings : liste de {"profile", "message"}
     .\validate-profiles.ps1 -Help    # Afficher cette aide
 
 Description:
@@ -63,6 +71,7 @@ function Write-Error-Message {
     param([string]$ProfileName, [string]$Message)
     Write-Host "❌ ERREUR " -ForegroundColor Red -NoNewline
     Write-Host "[$ProfileName]: $Message"
+    $Script:JsonErrors.Add([ordered]@{ profile = $ProfileName; message = $Message })
     $Script:Errors++
 }
 
@@ -70,6 +79,7 @@ function Write-Warning-Message {
     param([string]$ProfileName, [string]$Message)
     Write-Host "⚠️  AVERTISSEMENT " -ForegroundColor Yellow -NoNewline
     Write-Host "[$ProfileName]: $Message"
+    $Script:JsonWarnings.Add([ordered]@{ profile = $ProfileName; message = $Message })
     $Script:Warnings++
 }
 
@@ -712,18 +722,39 @@ function Main {
 }
 
 # Afficher l'aide si demandé
-if ($Help) {
+if ($Help -or $args -ccontains '--help') {
     Show-Usage
     exit 0
 }
 
 # Un argument inconnu est une erreur, comme dans validate-profiles.sh
-if ($args.Count -gt 0) {
-    Write-Host "Argument inconnu: $($args[0])" -ForegroundColor Red
-    Show-Usage
-    exit 1
+foreach ($argument in $args) {
+    if ($argument -ceq '--json') {
+        $Script:JsonOutput = $true
+    }
+    else {
+        Write-Host "Argument inconnu: $argument" -ForegroundColor Red
+        Show-Usage
+        exit 1
+    }
 }
 
 # Exécuter
-$exitCode = Main | Select-Object -Last 1
+if (-not $Script:JsonOutput) {
+    $exitCode = Main | Select-Object -Last 1
+    exit $exitCode
+}
+
+# --json : le texte destiné à l'utilisateur (flux d'information) est supprimé
+$exitCode = Main 6>$null | Select-Object -Last 1
+if ($exitCode -ne 0 -and $Script:Errors -eq 0) {
+    [Console]::Error.WriteLine("Le module PowerShell 'powershell-yaml' est requis pour valider les profils.")
+    exit $exitCode
+}
+ConvertTo-Json -Compress -Depth 3 -InputObject ([ordered]@{
+        valid     = ($Script:Errors -eq 0)
+        validated = $Script:Validated
+        errors    = @($Script:JsonErrors)
+        warnings  = @($Script:JsonWarnings)
+    })
 exit $exitCode

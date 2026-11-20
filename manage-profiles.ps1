@@ -9,6 +9,16 @@
 .PARAMETER Action
     Action à effectuer : add, list, generate, init-secrets, sync-secrets, list-secrets
 
+.PARAMETER Options
+    Options de l'action, écrites comme pour manage-profiles.sh :
+      list [--json]                    Liste des profils en JSON
+      generate [--dry-run [--json]]    Rien n'est écrit : indique ce qui changerait
+      add --name <nom> --image <image> Ajouter un profil sans aucune question, avec au choix :
+          --description <texte>  --docker-port <port>  --local-port <port>
+          --publish <hôte:conteneur>  --docker-profile <profil>
+          --traefik-prefix </préfixe>  --keep-prefix
+          --env <NOM=valeur> (répétable)  --secret <NOM> (répétable)  --no-generate
+
 .EXAMPLE
     .\manage-profiles.ps1 -Action add
     Ajouter un nouveau profil de service
@@ -20,16 +30,88 @@
 .EXAMPLE
     .\manage-profiles.ps1 -Action generate
     Regénérer docker-compose.yml et traefik/dynamic.yml
+
+.EXAMPLE
+    .\manage-profiles.ps1 add --name api --image nginx:alpine --traefik-prefix /api
+    Ajouter un profil sans aucune question, puis regénérer
 #>
 
 param(
-    [Parameter(Mandatory = $false)]
+    [Parameter(Mandatory = $false, Position = 0)]
     [ValidateSet('add', 'list', 'generate', 'init-secrets', 'sync-secrets', 'list-secrets')]
-    [string]$Action = 'list'
+    [string]$Action = 'list',
+
+    [Parameter(ValueFromRemainingArguments = $true)]
+    [string[]]$Options
 )
 
 $PSDefaultParameterValues['*:Encoding'] = 'UTF8'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
+function Stop-WithUsageError {
+    param([string]$Message)
+
+    [Console]::Error.WriteLine($Message)
+    [Console]::Error.WriteLine("Usage: .\manage-profiles.ps1 <add|list|generate|init-secrets|sync-secrets|list-secrets> [options]")
+    [Console]::Error.WriteLine("       list [--json] | generate [--dry-run [--json]] | add --name <nom> --image <image> [options]")
+    [Console]::Error.WriteLine("       Get-Help .\manage-profiles.ps1 -Full pour le détail des options")
+    exit 1
+}
+
+# Options : chacune n'est acceptée que par l'action qu'elle concerne
+$JsonOutput = $false
+$DryRun = $false
+$AddOptionsGiven = $false
+$AddOptions = @{
+    Name = ''; Image = ''; Description = ''; DockerPort = ''; LocalPort = ''; Publish = ''
+    DockerProfile = ''; TraefikPrefix = ''; KeepPrefix = $false; NoGenerate = $false
+    Env = @(); Secrets = @()
+}
+$addValueOptions = @{
+    '--name' = 'Name'; '--image' = 'Image'; '--description' = 'Description'
+    '--docker-port' = 'DockerPort'; '--local-port' = 'LocalPort'; '--publish' = 'Publish'
+    '--docker-profile' = 'DockerProfile'; '--traefik-prefix' = 'TraefikPrefix'
+    '--env' = 'Env'; '--secret' = 'Secrets'
+}
+$optionCount = if ($null -eq $Options) { 0 } else { $Options.Count }
+for ($optionIndex = 0; $optionIndex -lt $optionCount; $optionIndex++) {
+    $option = $Options[$optionIndex]
+
+    if ($option -ceq '--json' -and $Action -in @('list', 'generate')) {
+        $JsonOutput = $true
+    }
+    elseif ($option -ceq '--dry-run' -and $Action -eq 'generate') {
+        $DryRun = $true
+    }
+    elseif ($Action -eq 'add' -and $option -ceq '--keep-prefix') {
+        $AddOptionsGiven = $true
+        $AddOptions.KeepPrefix = $true
+    }
+    elseif ($Action -eq 'add' -and $option -ceq '--no-generate') {
+        $AddOptionsGiven = $true
+        $AddOptions.NoGenerate = $true
+    }
+    elseif ($Action -eq 'add' -and $addValueOptions.ContainsKey($option)) {
+        if ($optionIndex + 1 -ge $optionCount) {
+            Stop-WithUsageError "Valeur manquante pour l'option $option"
+        }
+        $AddOptionsGiven = $true
+        $optionKey = $addValueOptions[$option]
+        $optionIndex++
+        if ($optionKey -in @('Env', 'Secrets')) {
+            $AddOptions[$optionKey] += $Options[$optionIndex]
+        }
+        else {
+            $AddOptions[$optionKey] = $Options[$optionIndex]
+        }
+    }
+    else {
+        Stop-WithUsageError "Argument inconnu pour l'action ${Action}: $option"
+    }
+}
+if ($JsonOutput -and $Action -eq 'generate' -and -not $DryRun) {
+    Stop-WithUsageError "generate --json demande --dry-run"
+}
 
 # Module powershell-yaml : installé seulement s'il est absent
 if (-not (Get-Module -ListAvailable -Name powershell-yaml)) {
@@ -95,7 +177,7 @@ function Write-GeneratedFile {
 
     $text = ($Content -replace "`r", '').TrimEnd("`n") + "`n"
     # Chemin absolu : les API .NET ignorent le dossier courant de PowerShell
-    $fullPath = Join-Path (Get-Location).Path $Path
+    $fullPath = if ([System.IO.Path]::IsPathRooted($Path)) { $Path } else { Join-Path (Get-Location).Path $Path }
     [System.IO.File]::WriteAllText($fullPath, $text, (New-Object System.Text.UTF8Encoding $false))
 }
 
@@ -201,90 +283,173 @@ function Show-Profiles {
     }
 }
 
-# Fonction pour ajouter un profil
+# Texte à écrire entre guillemets dans un profil YAML
+function ConvertTo-QuotedYamlText {
+    param([string]$Text)
+
+    return $Text.Replace('\', '\\').Replace('"', '\"')
+}
+
+# Signale une option de add invalide et termine le script
+function Stop-WithAddError {
+    param([string]$Message)
+
+    [Console]::Error.WriteLine($Message)
+    exit 1
+}
+
+# Fonction pour ajouter un profil : questions interactives, ou sans aucune question si des
+# options sont passées sur la ligne de commande (mêmes options que manage-profiles.sh)
 function Add-Profile {
-    Write-Host "`n➕ AJOUTER UN NOUVEAU PROFIL" -ForegroundColor Cyan
-    Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor DarkGray
-    
-    # Collecter les informations
-    $name = Read-Host "`nNom du service (ex: api-backend, frontend)"
-    if ([string]::IsNullOrWhiteSpace($name)) {
-        Write-Error "Le nom est requis"
-        exit 1
+    $interactive = -not $AddOptionsGiven
+
+    if ($interactive) {
+        Write-Host "`n➕ AJOUTER UN NOUVEAU PROFIL" -ForegroundColor Cyan
+        Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor DarkGray
+        $name = Read-Host "`nNom du service (ex: api-backend, frontend)"
     }
-    
+    else {
+        $name = $AddOptions.Name
+    }
+    if ([string]::IsNullOrWhiteSpace($name)) {
+        Stop-WithAddError "Le nom est requis"
+    }
+
     # Nettoyer le nom
     $name = $name.ToLower() -replace '[^a-z0-9-]', '-'
     $fileName = Join-Path $ProfilesDir "$name.yml"
-    
-    if (Test-Path $fileName) {
-        Write-Error "Un profil '$name' existe déjà !"
-        exit 1
-    }
-    
-    $description = Read-Host "Description du service"
-    $image = Read-Host "Image Docker (ex: nginx:latest, registry.io/myapp:v1.0)"
-    $dockerPort = Read-Host "Port interne du conteneur (ex: 80, 8000)"
-    $localPort = Read-Host "Port exposé localement (via Traefik host) (ex: 8001)"
-    if ([string]::IsNullOrWhiteSpace($dockerPort)) { $dockerPort = "80" }
-    if ([string]::IsNullOrWhiteSpace($localPort)) { $localPort = $dockerPort }
 
-    # Par défaut le service n'est joignable que via Traefik ; publier un port est optionnel
-    $hostBinding = Read-Host "Publier aussi un port sur l'hôte (hôte:conteneur, ex: 9000:${dockerPort}, Entrée pour aucun)"
+    if (Test-Path $fileName) {
+        Stop-WithAddError "Un profil '$name' existe déjà !"
+    }
+
+    $envVars = @()
+    $secretEntries = @()
+
+    if ($interactive) {
+        $description = Read-Host "Description du service"
+        $image = Read-Host "Image Docker (ex: nginx:latest, registry.io/myapp:v1.0)"
+        $dockerPort = Read-Host "Port interne du conteneur (ex: 80, 8000)"
+        $localPort = Read-Host "Port exposé localement (via Traefik host) (ex: 8001)"
+        if ([string]::IsNullOrWhiteSpace($dockerPort)) { $dockerPort = "80" }
+        if ([string]::IsNullOrWhiteSpace($localPort)) { $localPort = $dockerPort }
+
+        # Par défaut le service n'est joignable que via Traefik ; publier un port est optionnel
+        $hostBinding = Read-Host "Publier aussi un port sur l'hôte (hôte:conteneur, ex: 9000:${dockerPort}, Entrée pour aucun)"
+        if ($hostBinding -eq 'none') { $hostBinding = '' }
+
+        Write-Host "`n🔑 Activation du service" -ForegroundColor Yellow
+        $alwaysActive = (Read-Host "Service toujours actif (démarré par défaut) ? (O/n)") -ne 'n'
+        $dockerProfile = $null
+        if (-not $alwaysActive) {
+            $dockerProfile = Read-Host "Nom du profil Docker (pour démarrage conditionnel, ex: $name)"
+            if ([string]::IsNullOrWhiteSpace($dockerProfile)) { $dockerProfile = $name }
+        }
+
+        Write-Host "`n🔧 Configuration Traefik" -ForegroundColor Yellow
+        $enableTraefik = (Read-Host "Activer Traefik ? (o/N)") -eq 'o'
+        $traefikPrefix = "/"
+        $stripPrefix = $false
+
+        if ($enableTraefik) {
+            $traefikPrefix = Read-Host "Préfixe de route (ex: /api, /app)"
+            if ([string]::IsNullOrWhiteSpace($traefikPrefix)) { $traefikPrefix = "/$name" }
+            $stripPrefix = (Read-Host "Supprimer le préfixe avant transmission ? (O/n)") -ne 'n'
+        }
+
+        Write-Host "`n🔐 Variables d'environnement" -ForegroundColor Yellow
+        Write-Host "Entrez les variables (format: NOM=valeur), ligne vide pour terminer"
+        while ($true) {
+            $envVar = Read-Host "Variable d'environnement"
+            if ([string]::IsNullOrWhiteSpace($envVar)) { break }
+            $envVars += "    - $envVar"
+        }
+
+        Write-Host "`n🔑 Secrets depuis secrets.env" -ForegroundColor Yellow
+        Write-Host "Entrez les secrets (format: SECRET_NAME), ligne vide pour terminer"
+        while ($true) {
+            $secret = Read-Host "Nom du secret"
+            if ([string]::IsNullOrWhiteSpace($secret)) { break }
+            $secretEntries += @{ Name = $secret; Description = (Read-Host "  Description (optionnel)") }
+        }
+    }
+    else {
+        $plainValue = '^[^\s"''#]+\z'
+        $portValue = '^[0-9]{1,5}\z'
+
+        $image = $AddOptions.Image
+        if ($image -eq '') { Stop-WithAddError "L'option --image est requise" }
+        if ($image -cnotmatch $plainValue) { Stop-WithAddError "Image invalide: $image" }
+
+        $description = $AddOptions.Description
+        if ($description -match "[`r`n]") { Stop-WithAddError "La description doit tenir sur une ligne" }
+
+        $dockerPort = if ($AddOptions.DockerPort -ne '') { $AddOptions.DockerPort } else { '80' }
+        $localPort = if ($AddOptions.LocalPort -ne '') { $AddOptions.LocalPort } else { $dockerPort }
+        if ($dockerPort -cnotmatch $portValue) { Stop-WithAddError "Port invalide pour --docker-port: $dockerPort" }
+        if ($localPort -cnotmatch $portValue) { Stop-WithAddError "Port invalide pour --local-port: $localPort" }
+
+        $hostBinding = $AddOptions.Publish
+        if ($hostBinding -ne '' -and $hostBinding -cnotmatch $plainValue) {
+            Stop-WithAddError "Port invalide pour --publish: $hostBinding"
+        }
+
+        $alwaysActive = $true
+        $dockerProfile = $null
+        if ($AddOptions.DockerProfile -ne '') {
+            if ($AddOptions.DockerProfile -cnotmatch '^[a-zA-Z0-9][a-zA-Z0-9_.-]*\z') {
+                Stop-WithAddError "Profil Docker invalide: $($AddOptions.DockerProfile)"
+            }
+            $alwaysActive = $false
+            $dockerProfile = $AddOptions.DockerProfile
+        }
+
+        $enableTraefik = $false
+        $traefikPrefix = "/"
+        $stripPrefix = $false
+        if ($AddOptions.TraefikPrefix -ne '') {
+            if ($AddOptions.TraefikPrefix -cnotmatch '^/[a-zA-Z0-9/_.-]*\z') {
+                Stop-WithAddError "Préfixe Traefik invalide (doit commencer par /): $($AddOptions.TraefikPrefix)"
+            }
+            $enableTraefik = $true
+            $traefikPrefix = $AddOptions.TraefikPrefix
+            $stripPrefix = -not $AddOptions.KeepPrefix
+        }
+
+        # Entre apostrophes dans le profil : la valeur est du texte, quel que soit son contenu
+        foreach ($envVar in $AddOptions.Env) {
+            if ($envVar -cnotmatch '^[A-Za-z_][A-Za-z0-9_]*=' -or $envVar -match "[`r`n]") {
+                Stop-WithAddError "Variable invalide pour --env (format NOM=valeur): $envVar"
+            }
+            $envVars += "    - '$($envVar.Replace("'", "''"))'"
+        }
+
+        foreach ($secret in $AddOptions.Secrets) {
+            if ($secret -cnotmatch '^[A-Za-z_][A-Za-z0-9_]*\z') {
+                Stop-WithAddError "Nom de secret invalide pour --secret: $secret"
+            }
+            $secretEntries += @{ Name = $secret; Description = '' }
+        }
+    }
+
     $exposePorts = $false
     $portsSection = ""
-    if (-not [string]::IsNullOrWhiteSpace($hostBinding) -and $hostBinding -ne 'none') {
+    if (-not [string]::IsNullOrWhiteSpace($hostBinding)) {
         $exposePorts = $true
         $portsSection = "`n  ports:`n    - `"$hostBinding`""
     }
-    
-    Write-Host "`n🔑 Activation du service" -ForegroundColor Yellow
-    $alwaysActive = (Read-Host "Service toujours actif (démarré par défaut) ? (O/n)") -ne 'n'
-    $dockerProfile = $null
-    if (-not $alwaysActive) {
-        $dockerProfile = Read-Host "Nom du profil Docker (pour démarrage conditionnel, ex: $name)"
-        if ([string]::IsNullOrWhiteSpace($dockerProfile)) { $dockerProfile = $name }
-    }
-    
-    Write-Host "`n🔧 Configuration Traefik" -ForegroundColor Yellow
-    $enableTraefik = (Read-Host "Activer Traefik ? (o/N)") -eq 'o'
-    $traefikPrefix = "/"
-    $stripPrefix = $false
-    
-    if ($enableTraefik) {
-        $traefikPrefix = Read-Host "Préfixe de route (ex: /api, /app)"
-        if ([string]::IsNullOrWhiteSpace($traefikPrefix)) { $traefikPrefix = "/$name" }
-        $stripPrefix = (Read-Host "Supprimer le préfixe avant transmission ? (O/n)") -ne 'n'
-    }
-    
-    Write-Host "`n🔐 Variables d'environnement" -ForegroundColor Yellow
-    Write-Host "Entrez les variables (format: NOM=valeur), ligne vide pour terminer"
-    $envVars = @()
-    while ($true) {
-        $env = Read-Host "Variable d'environnement"
-        if ([string]::IsNullOrWhiteSpace($env)) { break }
-        $envVars += "    - $env"
-    }
-    
-    Write-Host "`n🔑 Secrets depuis secrets.env" -ForegroundColor Yellow
-    Write-Host "Entrez les secrets (format: SECRET_NAME), ligne vide pour terminer"
+
     $secrets = @()
     $secretsDoc = @()
-    while ($true) {
-        $secret = Read-Host "Nom du secret"
-        if ([string]::IsNullOrWhiteSpace($secret)) { break }
-        $secretVar = $secret.ToUpper() -replace '[^A-Z0-9_]', '_'
-        $secretDesc = Read-Host "  Description de $secretVar (optionnel)"
-        if ([string]::IsNullOrWhiteSpace($secretDesc)) { $secretDesc = "Secret pour $name" }
-        
+    foreach ($entry in $secretEntries) {
+        $secretVar = $entry.Name.ToUpper() -replace '[^A-Z0-9_]', '_'
+        $secretDesc = if ([string]::IsNullOrWhiteSpace($entry.Description)) { "Secret pour $name" } else { $entry.Description }
         $secrets += "    - ${secretVar}=`${${secretVar}:-changeme}"
-        $secretsDoc += @"
-  - name: $secretVar
-    description: "$secretDesc"
-    default: changeme
-"@
+        $secretsDoc += "  - name: $secretVar`n    description: `"$(ConvertTo-QuotedYamlText $secretDesc)`"`n    default: changeme"
     }
-    
+
+    # La description est écrite entre guillemets dans le profil
+    $description = ConvertTo-QuotedYamlText $description
     # Générer le fichier YAML
     $allEnv = ($envVars + $secrets) -join "`n"
     if ([string]::IsNullOrWhiteSpace($allEnv)) {
@@ -305,6 +470,7 @@ $($secretsDoc -join "`n")
     $dockerProfileValue = if ($dockerProfile) { $dockerProfile } else { 'null' }
     
     $profileContent = @"
+# yaml-language-server: `$schema=../schemas/profile.schema.json
 # Profil généré automatiquement
 name: $name
 description: "$description"
@@ -347,8 +513,14 @@ metadata:
     Write-Host "`n✅ Profil créé : $fileName" -ForegroundColor Green
     Write-Host "📝 Vous pouvez éditer ce fichier pour personnaliser davantage" -ForegroundColor Gray
     
-    # Proposer de regénérer docker-compose.yml
-    if ((Read-Host "`nRegénérer docker-compose.yml maintenant ? (O/n)") -ne 'n') {
+    # Regénérer docker-compose.yml : proposé en mode interactif, fait d'office sinon
+    $regenerate = if ($interactive) {
+        (Read-Host "`nRegénérer docker-compose.yml maintenant ? (O/n)") -ne 'n'
+    }
+    else {
+        -not $AddOptions.NoGenerate
+    }
+    if ($regenerate) {
         Generate-DockerCompose
     }
 }
@@ -1068,6 +1240,90 @@ function Initialize-Secrets {
     }
 }
 
+# Liste des profils en JSON : un objet par fichier, avec les valeurs par défaut appliquées
+# comme le fait la génération. Mêmes champs que manage-profiles.sh list --json.
+function Show-ProfilesJson {
+    $items = foreach ($pro in (Get-ChildItem -Path $ProfilesDir -Filter "*.yml" -ErrorAction SilentlyContinue)) {
+        try {
+            $data = Get-Content -LiteralPath $pro.FullName -Raw | ConvertFrom-Yaml -Ordered
+        }
+        catch {
+            [Console]::Error.WriteLine("Profil illisible (YAML invalide): $ProfilesDir/$($pro.Name)")
+            exit 1
+        }
+        if ($data -isnot [System.Collections.IDictionary]) { $data = @{} }
+
+        $name = Get-YamlText $data.name $pro.BaseName
+        $description = (Get-YamlText $data.description).TrimEnd("`n")
+        $dockerProfile = Get-YamlText $data.docker_profile
+        $image = Get-YamlText $data['docker-compose'].image
+        $traefikEnabled = (Get-YamlText $data.traefik.enabled 'false') -ceq 'true'
+
+        [ordered]@{
+            name            = $name
+            file            = "$ProfilesDir/$($pro.Name)"
+            description     = if ($description -eq '') { $null } else { $description }
+            enabled         = (Get-YamlText $data.enabled 'true') -ceq 'true'
+            always_active   = (Get-YamlText $data.always_active) -ceq 'true'
+            docker_profile  = if ($dockerProfile -eq '') { $null } else { $dockerProfile }
+            expose_ports    = (Get-YamlText $data.expose_ports) -ceq 'true'
+            image           = if ($image -eq '') { $null } else { $image }
+            traefik_enabled = $traefikEnabled
+            url             = if ($traefikEnabled) { "http://localhost:8080" + (Get-YamlText $data.traefik.prefix "/$name") } else { $null }
+        }
+    }
+
+    ConvertTo-Json -InputObject @($items) -Compress -Depth 3
+}
+
+# Contenu d'un fichier généré sans la ligne d'horodatage, qui change à chaque génération
+function Get-ComparableContent {
+    param([string]$Path)
+
+    return (@(Get-Content -LiteralPath $Path) -notmatch '^# Dernière génération') -join "`n"
+}
+
+# generate --dry-run : génère dans un dossier temporaire et indique, pour chaque fichier,
+# s'il serait créé (new), modifié (changed) ou identique (unchanged). Rien n'est écrit dans
+# le projet. Avec --json, seul le résultat est écrit sur stdout ; le reste va sur stderr.
+function Invoke-GenerateDryRun {
+    $realFiles = @($DockerComposeFile, $TraefikDynamicFile)
+    $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())
+    New-Item -ItemType Directory -Path $tempDir | Out-Null
+
+    try {
+        # Les fonctions de génération lisent ces deux variables : elles écrivent dans le dossier temporaire
+        $DockerComposeFile = Join-Path $tempDir 'docker-compose.yml'
+        $TraefikDynamicFile = Join-Path $tempDir 'dynamic.yml'
+        $newFiles = @($DockerComposeFile, $TraefikDynamicFile)
+
+        if ($JsonOutput) {
+            Generate-DockerCompose *>&1 | ForEach-Object { [Console]::Error.WriteLine("$_") }
+        }
+        else {
+            Generate-DockerCompose
+            Write-Host "`n🔎 Simulation : aucun fichier n'a été écrit" -ForegroundColor Cyan
+        }
+
+        $items = for ($index = 0; $index -lt $realFiles.Count; $index++) {
+            $status = 'new'
+            if (Test-Path -LiteralPath $realFiles[$index]) {
+                $same = (Get-ComparableContent $realFiles[$index]) -ceq (Get-ComparableContent $newFiles[$index])
+                $status = if ($same) { 'unchanged' } else { 'changed' }
+            }
+            if (-not $JsonOutput) { Write-Host "  $($realFiles[$index]) : $status" }
+            [ordered]@{ file = $realFiles[$index]; status = $status }
+        }
+
+        if ($JsonOutput) {
+            ConvertTo-Json -InputObject @($items) -Compress -Depth 3
+        }
+    }
+    finally {
+        Remove-Item -LiteralPath $tempDir -Recurse -Force
+    }
+}
+
 # Main : exécuté depuis le dossier du script, comme manage-profiles.sh. Le dossier courant de
 # l'appelant est restauré sur toutes les sorties, y compris exit dans une fonction : menu.ps1
 # et launch.ps1 appellent ce script avec & dans leur propre session.
@@ -1075,8 +1331,8 @@ Push-Location -LiteralPath $PSScriptRoot
 try {
     switch ($Action) {
         'add' { Add-Profile }
-        'list' { Show-Profiles }
-        'generate' { Generate-DockerCompose }
+        'list' { if ($JsonOutput) { Show-ProfilesJson } else { Show-Profiles } }
+        'generate' { if ($DryRun) { Invoke-GenerateDryRun } else { Generate-DockerCompose } }
         'init-secrets' { Initialize-Secrets }
         'sync-secrets' { Sync-Secrets }
         'list-secrets' { Show-SecretVariables }
