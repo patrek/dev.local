@@ -8,6 +8,10 @@ PROFILES_DIR="profiles"
 ERRORS=0
 WARNINGS=0
 VALIDATED=0
+JSON_OUTPUT=false
+# Erreurs et avertissements en JSON, pour la sortie --json
+JSON_ERRORS=()
+JSON_WARNINGS=()
 
 # Couleurs pour l'affichage
 RED='\033[91m'
@@ -22,6 +26,9 @@ VALIDATION DES PROFILS DEV.LOCAL 2.0
 
 Usage:
     ./validate-profiles.sh           Valider tous les profils
+    ./validate-profiles.sh --json    Résultat en JSON sur stdout, sans autre texte :
+                                     {"valid", "validated", "errors", "warnings"}
+                                     errors et warnings : liste de {"profile", "message"}
     ./validate-profiles.sh --help    Afficher cette aide
 
 Valide la syntaxe YAML, les champs requis et les valeurs des profils du répertoire profiles/.
@@ -40,6 +47,9 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
                 show_usage
                 exit 0
                 ;;
+            --json)
+                JSON_OUTPUT=true
+                ;;
             *)
                 echo -e "${RED}Argument inconnu: $arg${RESET}" >&2
                 show_usage >&2
@@ -52,6 +62,7 @@ fi
 # yq local ou via Docker (voir lib/yq.sh)
 cd "$(dirname "${BASH_SOURCE[0]}")" || exit 1
 source "lib/yq.sh"
+source "lib/json.sh"
 
 # Champs lus dans chaque profil, en un seul appel yq par fichier
 PROFILE_FIELDS=(
@@ -96,6 +107,7 @@ error() {
     local profile="$1"
     local message="$2"
     echo -e "${RED}❌ ERREUR${RESET} [$profile]: $message"
+    JSON_ERRORS+=("{\"profile\":$(json_string "$profile"),\"message\":$(json_string "$message")}")
     ((ERRORS++))
 }
 
@@ -104,6 +116,7 @@ warning() {
     local profile="$1"
     local message="$2"
     echo -e "${YELLOW}⚠️  AVERTISSEMENT${RESET} [$profile]: $message"
+    JSON_WARNINGS+=("{\"profile\":$(json_string "$profile"),\"message\":$(json_string "$message")}")
     ((WARNINGS++))
 }
 
@@ -384,8 +397,21 @@ validate_profile() {
     return 0
 }
 
+# Écrit le résultat de la validation en JSON sur le descripteur 3 (stdout d'origine)
+print_json_result() {
+    local valid=true
+    [ "$ERRORS" -gt 0 ] && valid=false
+    local IFS=,
+    echo "{\"valid\":$valid,\"validated\":$VALIDATED,\"errors\":[${JSON_ERRORS[*]}],\"warnings\":[${JSON_WARNINGS[*]}]}" >&3
+}
+
 # Main
 main() {
+    # --json : le texte destiné à l'utilisateur est supprimé, seul le JSON final est écrit
+    if [ "$JSON_OUTPUT" = true ]; then
+        exec 3>&1 > /dev/null
+    fi
+
     echo -e "${CYAN}╔══════════════════════════════════════════════════════╗${RESET}"
     echo -e "${CYAN}║     VALIDATION DES PROFILS DEV.LOCAL 2.0            ║${RESET}"
     echo -e "${CYAN}╚══════════════════════════════════════════════════════╝${RESET}"
@@ -400,6 +426,7 @@ main() {
 
     if [ ! -d "$PROFILES_DIR" ] || [ -z "$(ls -A $PROFILES_DIR/*.yml 2>/dev/null)" ]; then
         echo -e "${YELLOW}Aucun profil trouvé dans $PROFILES_DIR${RESET}"
+        [ "$JSON_OUTPUT" = true ] && print_json_result
         exit 0
     fi
 
@@ -434,6 +461,7 @@ main() {
     echo -e "  Erreurs            : ${RED}$ERRORS${RESET}"
     echo -e "  Avertissements     : ${YELLOW}$WARNINGS${RESET}"
     echo ""
+    [ "$JSON_OUTPUT" = true ] && print_json_result
 
     if [ $ERRORS -gt 0 ]; then
         echo -e "${RED}❌ La validation a échoué avec $ERRORS erreur(s)${RESET}"

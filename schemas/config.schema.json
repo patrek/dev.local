@@ -1,0 +1,104 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/patrek/dev.local/schemas/config.schema.json",
+  "title": "Configuration globale Dev.Local",
+  "description": "config.yml : réglages communs à tous les services.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "namespace": {
+      "description": "Nom du projet Docker Compose et préfixe des conteneurs Traefik, Dozzle et socket-proxy.",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]*$",
+      "default": "devlocal"
+    },
+    "dozzle_enabled": {
+      "description": "Ajoute Dozzle (logs des conteneurs) : http://localhost:8080/logs.",
+      "type": "boolean",
+      "default": true
+    },
+    "dozzle_port": {
+      "description": "Port de Dozzle sur 127.0.0.1.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535,
+      "default": 9999
+    },
+    "registries": {
+      "description": "Registres Docker utilisés par \"just ecr-login\" et \"just jfrog-login\".",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jfrog": { "$ref": "#/definitions/registry" },
+        "ecr": { "$ref": "#/definitions/registry" }
+      }
+    },
+    "aws": {
+      "description": "Réglages AWS de \"just aws-sso\", \"just aws-id\" et \"just ecr-login\".",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "profile": {
+          "description": "Profil AWS. La variable d'environnement AWS_PROFILE a priorité.",
+          "type": "string"
+        },
+        "region": {
+          "description": "Région du registre ECR.",
+          "type": "string"
+        }
+      }
+    },
+    "shared_env": {
+      "description": "Groupes de variables d'environnement partagées. Clé : nom du groupe ; valeur : liste de NOM=valeur.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*=" }
+      }
+    },
+    "shared_env_config": {
+      "description": "Injection des groupes de shared_env dans les services.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "description": "false : aucune variable partagée n'est injectée.",
+          "type": "boolean",
+          "default": true
+        },
+        "auto_inject": {
+          "description": "Groupes injectés dans tous les services.",
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "exclude_services": {
+          "description": "Services qui ne reçoivent aucune variable partagée.",
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "service_specific": {
+          "description": "Groupes supplémentaires par service. Clé : nom du service ; valeur : liste de groupes.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "registry": {
+      "type": "object",
+      "required": ["url"],
+      "additionalProperties": false,
+      "properties": {
+        "url": {
+          "description": "Adresse du registre, sans https://.",
+          "type": "string"
+        },
+        "description": { "type": "string" }
+      }
+    }
+  }
+}

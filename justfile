@@ -6,6 +6,7 @@ set windows-shell := ["pwsh.exe", "-NoLogo", "-Command"]
 
 launch := if os() == "windows" { ".\\launch.ps1" } else { "./launch.sh" }
 manage := if os() == "windows" { ".\\manage-profiles.ps1" } else { "./manage-profiles.sh" }
+validator := if os() == "windows" { ".\\validate-profiles.ps1" } else { "./validate-profiles.sh" }
 
 @default:
     just --list --unsorted
@@ -37,6 +38,11 @@ restart:
 ps:
     {{launch}} ps
 
+[doc("État de chaque service, démarré ou non (--json pour une sortie JSON)")]
+[group("docker")]
+status *args:
+    {{launch}} status {{args}}
+
 [doc("Voir les logs d'un service")]
 [group("docker")]
 logs service="":
@@ -62,15 +68,37 @@ run service *args:
 
 # Profils
 
-[doc("Lister les profile dev.local")]
+[doc("Lister les profile dev.local (--json pour une sortie JSON)")]
 [group("profile")]
-profiles:
-    {{manage}} list
+profiles *args:
+    {{manage}} list {{args}}
 
-[doc("Regénérer docker-compose.yml et traefik")]
+[doc("Regénérer docker-compose.yml et traefik (--dry-run [--json] : sans rien écrire)")]
 [group("profile")]
-generate:
-    {{manage}} generate
+generate *args:
+    {{manage}} generate {{args}}
+
+[doc("Valider les profils (--json pour une sortie JSON)")]
+[group("profile")]
+validate-profiles *args:
+    {{validator}} {{args}}
+
+[unix]
+[doc("Ajouter un profil : interactif sans option, sinon --name <nom> --image <image> [options]")]
+[group("profile")]
+[positional-arguments]
+add-profile *args:
+    ./manage-profiles.sh add "$@"
+
+# Recette en script : chaque option arrive telle quelle dans $args, espaces compris
+[windows]
+[doc("Ajouter un profil : interactif sans option, sinon --name <nom> --image <image> [options]")]
+[group("profile")]
+[positional-arguments]
+add-profile *args:
+    #!pwsh.exe
+    .\manage-profiles.ps1 -Action add -Options $args
+    exit $LASTEXITCODE
 
 [doc("Valider la configuration Docker Compose")]
 [group("profile")]
@@ -138,7 +166,7 @@ test:
 [doc("Analyser les scripts Bash avec ShellCheck (via Docker)")]
 [group("dev")]
 lint:
-    docker run --rm -v "$PWD":/mnt:ro -w /mnt koalaman/shellcheck:v0.11.0 -x -S warning launch.sh manage-profiles.sh validate-profiles.sh menu.sh lib/yq.sh tests/run-tests.sh tests/compare-shells.sh
+    docker run --rm -v "$PWD":/mnt:ro -w /mnt koalaman/shellcheck:v0.11.0 -x -S warning launch.sh manage-profiles.sh validate-profiles.sh menu.sh lib/yq.sh lib/json.sh tests/run-tests.sh tests/compare-shells.sh
 
 # Fonction interne pour déléguer aux scripts
 

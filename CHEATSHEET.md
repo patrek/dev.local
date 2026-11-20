@@ -13,6 +13,7 @@
 | Arrêter | `just stop` | `.\launch.ps1 stop` | `./launch.sh stop` |
 | Redémarrer (recréer) | `just restart` | `.\launch.ps1 recreate` | `./launch.sh recreate` |
 | Statut | `just ps` | `.\launch.ps1 ps` | `./launch.sh ps` |
+| État de chaque service | `just status` | `.\launch.ps1 status` | `./launch.sh status` |
 | Logs tous | `just logs` | `.\launch.ps1 logs` | `./launch.sh logs` |
 | Logs service | `just logs api` | `.\launch.ps1 logs -service api` | `./launch.sh logs api` |
 | Commande ponctuelle | `just run gulp npx gulp build` | `.\launch.ps1 run gulp -- npx gulp build` | `./launch.sh run gulp npx gulp build` |
@@ -23,10 +24,23 @@
 | Action | Just | PowerShell | Bash |
 |--------|------|------------|------|
 | Lister | `just profiles` | `.\manage-profiles.ps1 -Action list` | `./manage-profiles.sh list` |
-| Ajouter | - | `.\manage-profiles.ps1 -Action add` | `./manage-profiles.sh add` |
+| Ajouter (questions) | `just add-profile` | `.\manage-profiles.ps1 -Action add` | `./manage-profiles.sh add` |
+| Ajouter (sans question) | `just add-profile --name api --image nginx` | `.\manage-profiles.ps1 add --name api --image nginx` | `./manage-profiles.sh add --name api --image nginx` |
 | Générer compose et Traefik | `just generate` | `.\manage-profiles.ps1 -Action generate` | `./manage-profiles.sh generate` |
-| Valider les profils | - | `.\validate-profiles.ps1` | `./validate-profiles.sh` |
+| Voir ce que la génération changerait | `just generate --dry-run` | `.\manage-profiles.ps1 generate --dry-run` | `./manage-profiles.sh generate --dry-run` |
+| Valider les profils | `just validate-profiles` | `.\validate-profiles.ps1` | `./validate-profiles.sh` |
 | Valider docker-compose.yml | `just validate` | `docker compose config --quiet` | `docker compose config --quiet` |
+
+### Sorties JSON (scripts, agents IA)
+
+Ajouter `--json` : la sortie standard ne contient que du JSON.
+
+| Action | Just | PowerShell | Bash |
+|--------|------|------------|------|
+| État des services | `just status --json` | `.\launch.ps1 status --json` | `./launch.sh status --json` |
+| Profils | `just profiles --json` | `.\manage-profiles.ps1 list --json` | `./manage-profiles.sh list --json` |
+| Validation | `just validate-profiles --json` | `.\validate-profiles.ps1 --json` | `./validate-profiles.sh --json` |
+| Génération à blanc | `just generate --dry-run --json` | `.\manage-profiles.ps1 generate --dry-run --json` | `./manage-profiles.sh generate --dry-run --json` |
 
 ### Secrets (SOPS)
 
