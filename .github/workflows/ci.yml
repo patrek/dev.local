@@ -36,11 +36,11 @@ jobs:
           if ($results) { exit 1 }
 
   schemas:
-    name: Schémas JSON
+    name: Schemas JSON
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Valider les profils et la configuration avec leurs schémas
+      - name: Valider les profils et la configuration avec leurs schemas
         run: |
           pipx run check-jsonschema==0.39.0 --schemafile schemas/profile.schema.json \
             profiles/*.yml tests/fixtures/profiles/*.yml
