@@ -20,6 +20,7 @@ Un système modulaire et générique pour gérer des services Docker avec profil
 - [📚 Exemples pratiques](#-exemples-pratiques)
 - [☁️ AWS et Docker Registry](#️-aws-et-docker-registry)
 - [🐧 Support Linux/macOS](#-support-linuxmacos)
+- [🤖 Scripts et agents IA](#-scripts-et-agents-ia)
 - [📚 Documentation complète](#-documentation-complète)
 - [🔒 Sécurité](#-sécurité)
 - [🌍 Compatibilité Multiplateforme](#-compatibilité-multiplateforme)
@@ -172,7 +173,11 @@ dev.local/
 │   ├── traefik.yml              # Config principale de Traefik
 │   └── dynamic.yml              # Routes (généré, non versionné)
 ├── lib/
-│   └── yq.sh                    # yq local ou via Docker (scripts Bash)
+│   ├── yq.sh                    # yq local ou via Docker (scripts Bash)
+│   └── json.sh                  # Écriture des sorties --json (scripts Bash)
+├── schemas/
+│   ├── profile.schema.json      # Schéma JSON d'un profil
+│   └── config.schema.json       # Schéma JSON de config.yml
 ├── docs/                        # Guides thématiques
 ├── tests/                       # Tests des scripts (fixtures, fichiers attendus)
 ├── docker-compose.yml           # Composition Docker (généré, non versionné)
@@ -187,6 +192,7 @@ dev.local/
 ├── manage-profiles.ps1 / manage-profiles.sh     # Profils, génération, secrets.env
 ├── validate-profiles.ps1 / validate-profiles.sh # Validation des profils
 ├── fix-sh-permissions.ps1                       # Bit exécutable des .sh (Windows)
+├── AGENTS.md                    # Instructions pour les agents IA (CLAUDE.md y renvoie)
 └── README.md                    # Ce fichier
 ```
 
@@ -279,6 +285,14 @@ Lancez le menu (`just menu`, `.\menu.ps1` ou `./menu.sh`), puis choisissez l'opt
 # Linux/macOS
 ./manage-profiles.sh add
 ```
+
+Avec des options, la même commande ne pose aucune question (utile dans un script ou pour un agent IA) :
+
+```bash
+just add-profile --name api --image nginx:alpine --traefik-prefix /api --docker-profile backend
+```
+
+`--name` et `--image` sont requis. Les autres options sont listées par `./manage-profiles.sh --help` (ou `Get-Help .\manage-profiles.ps1 -Full`) : `--description`, `--docker-port`, `--local-port`, `--publish`, `--docker-profile`, `--traefik-prefix`, `--keep-prefix`, `--env`, `--secret`, `--no-generate`.
 
 #### Option 3 : Copier un modèle
 
@@ -667,8 +681,8 @@ Les ports publiés sur l'hôte (`127.0.0.1:8080` pour HTTP, `127.0.0.1:8081` pou
 |--------|---------|-------------|------|-------------|
 | **Menu interactif** | `.\menu.ps1` | `./menu.sh` | `just menu` | Interface guidée pour toutes les opérations |
 | **Lancer services** | `.\launch.ps1` | `./launch.sh start` | `just start` | Orchestration des services Docker, secrets, AWS |
-| **Gérer profils** | `.\manage-profiles.ps1` | `./manage-profiles.sh` | `just profiles`, `just generate` | Gestion des profils, génération, `secrets.env` |
-| **Valider profils** | `.\validate-profiles.ps1` | `./validate-profiles.sh` | - | Validation des profils |
+| **Gérer profils** | `.\manage-profiles.ps1` | `./manage-profiles.sh` | `just profiles`, `just generate`, `just add-profile` | Gestion des profils, génération, `secrets.env` |
+| **Valider profils** | `.\validate-profiles.ps1` | `./validate-profiles.sh` | `just validate-profiles` | Validation des profils |
 | **Permissions .sh** | `.\fix-sh-permissions.ps1` | `chmod +x *.sh` | - | Bit exécutable des scripts Bash |
 
 Toutes les commandes, par catégorie (services Docker, profils, secrets, AWS, utilitaires), ainsi que les alias Just et les options du menu, sont dans [CHEATSHEET.md](CHEATSHEET.md).
@@ -869,6 +883,24 @@ chmod +x *.sh
 
 Les particularités de Linux/macOS (différences avec PowerShell, compatibilité, terminal, migration depuis Windows) sont décrites dans [BASH_README.md](BASH_README.md).
 
+## 🤖 Scripts et agents IA
+
+Les commandes ci-dessous ne posent aucune question et écrivent du JSON sur la sortie standard. Les messages destinés à l'utilisateur vont sur la sortie d'erreur ; le code de sortie vaut 0 en cas de succès.
+
+| Commande | Résultat |
+|----------|----------|
+| `just status --json` | État de chaque service, démarré ou non : `service`, `state`, `health` |
+| `just profiles --json` | Profils, valeurs par défaut appliquées : `name`, `file`, `enabled`, `always_active`, `docker_profile`, `url`, ... |
+| `just validate-profiles --json` | `valid`, `validated`, `errors`, `warnings` ; code de sortie 1 si une erreur est trouvée |
+| `just generate --dry-run --json` | Rien n'est écrit : chaque fichier généré est `new`, `changed` ou `unchanged` |
+| `just add-profile --name ... --image ...` | Crée un profil sans question (voir [Ajouter un nouveau service](#-ajouter-un-nouveau-service)) |
+
+`just status` et `just generate --dry-run` existent aussi sans `--json`.
+
+[AGENTS.md](AGENTS.md) décrit ces sorties en détail, les commandes à ne pas lancer sans l'utilisateur et les règles à suivre pour modifier les scripts. Claude Code, Codex, Copilot et Cursor lisent ce fichier automatiquement.
+
+Le format d'un profil et celui de `config.yml` sont décrits par les schémas JSON du dossier `schemas/`. Les fichiers d'exemple y renvoient par un commentaire `yaml-language-server` en première ligne : un éditeur qui le reconnaît (VS Code avec l'extension YAML, JetBrains) propose la complétion et signale les erreurs. Le schéma décrit un fichier isolé ; `just validate-profiles` reste la référence et vérifie aussi les clés en double et les conflits entre profils.
+
 ## 📚 Documentation Complète
 
 Chaque document a un rôle précis ; une information n'est décrite qu'à un seul endroit.
@@ -879,6 +911,7 @@ Chaque document a un rôle précis ; une information n'est décrite qu'à un seu
 | [QUICKSTART.md](QUICKSTART.md) | Premier démarrage en quelques minutes (parcours minimal) |
 | [CHEATSHEET.md](CHEATSHEET.md) | Aide-mémoire : toutes les commandes, sans explications |
 | [BASH_README.md](BASH_README.md) | Particularités Linux/macOS des scripts Bash |
+| [AGENTS.md](AGENTS.md) | Instructions pour les agents IA : commandes, sorties JSON, règles (en anglais) |
 | [docs/shared-env-guide.md](docs/shared-env-guide.md) | Référence des variables d'environnement partagées |
 | [docs/shared-env-examples.md](docs/shared-env-examples.md) | Exemples complets de variables partagées |
 | [docs/sops_age_guide.md](docs/sops_age_guide.md) | Configurer SOPS avec une clé Age |
@@ -923,9 +956,9 @@ just lint   # ShellCheck via Docker
 
 - `tests/run-tests.sh` copie les scripts et les fixtures de `tests/fixtures/` dans un répertoire temporaire, génère `docker-compose.yml` et `traefik/dynamic.yml`, puis les compare aux fichiers de `tests/expected/`. Il vérifie aussi que chaque profil de `tests/fixtures/invalid/` est rejeté par la validation.
 - Après un changement volontaire de la génération, mettez à jour les fichiers attendus avec `tests/run-tests.sh --update` et relisez le diff avant de commiter.
-- `tests/compare-shells.sh` exécute `manage-profiles.ps1` et `validate-profiles.ps1` sur les mêmes fixtures, puis vérifie que la génération PowerShell produit la même configuration que `manage-profiles.sh` (prérequis : `pwsh` et le module `powershell-yaml`).
+- `tests/compare-shells.sh` exécute `manage-profiles.ps1` et `validate-profiles.ps1` sur les mêmes fixtures, puis vérifie que la génération PowerShell produit la même configuration que `manage-profiles.sh` et que les sorties `--json` des deux shells sont identiques (prérequis : `pwsh` et le module `powershell-yaml`).
 
-La CI (`.github/workflows/ci.yml`) exécute ces vérifications sur chaque pull request, avec yq local puis via Docker, ainsi que PSScriptAnalyzer. Bash et PowerShell doivent générer la même configuration.
+La CI (`.github/workflows/ci.yml`) exécute ces vérifications sur chaque pull request, avec yq local puis via Docker, ainsi que PSScriptAnalyzer. Elle valide aussi les profils d'exemple, les fixtures et `config.yml` avec les schémas de `schemas/`. Bash et PowerShell doivent générer la même configuration.
 
 ### Conventional Commits
 
