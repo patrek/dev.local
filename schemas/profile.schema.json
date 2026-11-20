@@ -1,0 +1,186 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/patrek/dev.local/schemas/profile.schema.json",
+  "title": "Profil de service Dev.Local",
+  "description": "Un fichier profiles/<nom>.yml décrit un service. manage-profiles en génère docker-compose.yml et traefik/dynamic.yml. Ce schéma décrit le format ; validate-profiles fait en plus les vérifications entre profils (noms de conteneurs, ports hôtes) et refuse les clés en double.",
+  "type": "object",
+  "required": ["name", "enabled", "docker-compose"],
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "description": "Nom du service dans docker-compose.yml et dans les routes Traefik.",
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "description": "Description affichée par la liste des profils. Une seule ligne.",
+      "type": "string"
+    },
+    "enabled": {
+      "description": "false : le profil est ignoré à la génération, sans être supprimé.",
+      "type": "boolean"
+    },
+    "always_active": {
+      "description": "true : le service démarre avec \"just start\". false (défaut) : il ne démarre qu'avec son docker_profile.",
+      "type": "boolean",
+      "default": false
+    },
+    "docker_profile": {
+      "description": "Profil Docker Compose qui démarre le service (just start-profile <profil>). Requis si always_active n'est pas true ; null sinon.",
+      "type": ["string", "null"],
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.-]*$"
+    },
+    "expose_ports": {
+      "description": "false (défaut) : la section docker-compose.ports est ignorée, le service n'est joignable que par Traefik. true : les ports sont publiés, sur 127.0.0.1 sauf si une IP est précisée.",
+      "type": "boolean",
+      "default": false
+    },
+    "docker-compose": {
+      "description": "Définition du service, recopiée dans docker-compose.yml. Toute clé d'un service Docker Compose est acceptée.",
+      "type": "object",
+      "required": ["image"],
+      "properties": {
+        "image": {
+          "description": "Image Docker. Les variables ${VAR:-défaut} sont résolues par Docker Compose.",
+          "type": "string",
+          "minLength": 1
+        },
+        "container_name": {
+          "description": "Nom du conteneur, unique entre les profils activés. Recommandé.",
+          "type": "string",
+          "minLength": 1
+        },
+        "ports": {
+          "description": "Ports publiés si expose_ports est true. Retirer la section si le service ne publie aucun port.",
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "description": "Syntaxe courte : [IP:][port hôte:]port conteneur[/protocole]. Une variable ${...} compte pour un nombre.",
+                "type": "string",
+                "pattern": "^((([0-9]{1,3}[.]){3}[0-9]{1,3}|\\[[0-9a-fA-F:]+\\]):(([0-9]+|[$][{][^}]*[}])(-([0-9]+|[$][{][^}]*[}]))?)?:|([0-9]+|[$][{][^}]*[}])(-([0-9]+|[$][{][^}]*[}]))?:)?([0-9]+|[$][{][^}]*[}])(-([0-9]+|[$][{][^}]*[}]))?(/(tcp|udp|sctp))?$"
+              },
+              {
+                "description": "Port du conteneur seul.",
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 65535
+              },
+              {
+                "description": "Syntaxe longue. host_ip: 127.0.0.1 est ajouté à la génération s'il est absent.",
+                "type": "object",
+                "required": ["target"]
+              }
+            ]
+          }
+        },
+        "environment": {
+          "description": "Variables propres au service, en liste (NOM=valeur) ou en map (NOM: valeur). Les variables partagées de config.yml sont ajoutées à la génération.",
+          "oneOf": [
+            { "type": "array", "items": { "type": "string" } },
+            {
+              "type": "object",
+              "additionalProperties": { "type": ["string", "number", "boolean", "null"] }
+            }
+          ]
+        },
+        "volumes": {
+          "description": "Un volume nommé (nom:/chemin) est déclaré automatiquement dans la section volumes de docker-compose.yml.",
+          "type": "array",
+          "items": { "type": ["string", "object"] }
+        }
+      },
+      "additionalProperties": true
+    },
+    "traefik": {
+      "description": "Route Traefik du service : http://localhost:8080<prefix>.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "description": "true : une route est générée dans traefik/dynamic.yml.",
+          "type": "boolean",
+          "default": false
+        },
+        "prefix": {
+          "description": "Préfixe de la route. Commence par /.",
+          "type": "string",
+          "pattern": "^/"
+        },
+        "strip_prefix": {
+          "description": "true : le préfixe est retiré avant de transmettre la requête au service.",
+          "type": "boolean",
+          "default": false
+        },
+        "docker_port": {
+          "description": "Port du service dans le conteneur.",
+          "$ref": "#/definitions/port",
+          "default": 80
+        },
+        "local_port": {
+          "description": "Port du même service lancé sur l'hôte, hors Docker. Traefik l'essaie en premier, puis le conteneur.",
+          "$ref": "#/definitions/port",
+          "default": 80
+        },
+        "priority": {
+          "description": "Priorité de la route.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 10
+        },
+        "health_path": {
+          "description": "Chemin interrogé par Traefik pour savoir si le service répond.",
+          "type": "string",
+          "default": "/health"
+        }
+      },
+      "if": {
+        "properties": { "enabled": { "const": true } },
+        "required": ["enabled"]
+      },
+      "then": { "required": ["prefix"] }
+    },
+    "secrets": {
+      "description": "Variables de secrets du service, à définir dans secrets.env (just secrets-edit). Sans cette section, les ${VAR:-défaut} de docker-compose.environment sont détectés.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "description": "Nom de la variable.",
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          },
+          "description": { "type": "string" },
+          "default": {
+            "description": "Valeur écrite dans secrets.env par sync-secrets. Jamais un vrai secret : ce fichier est versionné.",
+            "type": ["string", "number", "boolean", "null"]
+          }
+        }
+      }
+    },
+    "metadata": {
+      "description": "Informations libres (catégorie, tags, documentation). Non utilisées par la génération.",
+      "type": "object"
+    }
+  },
+  "if": {
+    "properties": { "always_active": { "const": true } },
+    "required": ["always_active"]
+  },
+  "else": {
+    "required": ["docker_profile"],
+    "properties": {
+      "docker_profile": { "type": "string", "minLength": 1 }
+    }
+  },
+  "definitions": {
+    "port": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535
+    }
+  }
+}

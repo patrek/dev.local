@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=../schemas/profile.schema.json
 # Exemple de profil « outil » : gulp / npm exécutés dans Docker, sans Node.js sur le poste
 #
 # Ce fichier est désactivé (enabled: false) : il n'est ni généré ni démarré tel quel.
